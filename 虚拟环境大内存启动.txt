@@ -1,0 +1,21 @@
+docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"
+查找主机网络标号
+
+docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"
+CONTAINER ID   IMAGE      NAMES                                                                                              STATUS
+3ec95566501c   eda7:v23   yangshengquan--home-yangshengquan-cheshire-1d35d348-ea3b-4aea-9f7f-751dcf307d78                    Up 3 weeks
+cf31f0ca7cb1   eda7:v23   yangshengquan--home-yangshengquan-cheshire-ad6a1d10-564f-46da-baa7-d6e990caf3aa                    Up 3 weeks
+fbd084bcd32e   eda7:v23   yangshengquan--home-yangshengquan-new_cheshire-cheshire_mul-574c5911-c357-428e-835f-4c2022d50d60   Up 4 weeks
+b61634c9344c   eda7:v23   wycong--home-wycong-test_cheshire-sim_vcs-59e813dc-4595-44f1-9635-e07343c185fb                     Up 4 weeks
+98c2b4827a18   eda7:v23   wycong--home-wycong-test_cheshire-sim_vcs-21c7d442-15f6-4da5-ad1e-e96a0d2d93ff                     Up 7 weeks
+d69950d5dacb   eda7:v23   wycong--home-wycong-test_cheshire-cheshire-target-sim-vcs-97cd34ff-fd32-4ab3-966c-97e00774a96f     Up 2 months
+37fe8ebdf7d4   eda7:v23   wycong--home-wycong-eda_test-0933add0-bcb6-4cd5-b855-5f7cadbd05c9                                  Up 2 months
+7063b62c91b7   eda7:v23   wycong--home-wycong-test_cheshire-cheshire-target-sim-vcs-7fadfe8d-ac23-4d46-8616-f715d9bab9d2     Up 2 months
+0dad4a327505   eda7:v23   wycong--home-wycong-test_cheshire-0c233bb7-86b8-4ad3-821d-4ea8c44ec9cb                             Up 2 months
+ef5e676c14ab   eda7:v23   yangshengquan--home-yangshengquan-IC_try-9532523e-88a9-438d-af2a-89499adf7f2e                      Up 2 months
+
+查询到ef5e676c14ab ，并引用放到环境中启动。
+
+
+yangshengquan@userroot:~/new_cheshire/cheshire$ docker inspect ef5e676c14ab --format '{{range $name,$net := .NetworkSettings.Networks}}{{println $name $net.IPAddress}}{{end}}'
+isolated_network 172.19.0.3

@@ -1,0 +1,203 @@
+yangshengquan@userroot:~/new_cheshire/cheshire$ grep -R "OP_\\|opcode\\|8'h10\\|GEMM\\|SOFTMAX\\|REDUCE\\|DMA_LOAD\\|DMA_STORE" \
+>   -n hw/tiny_npu target/sim/src | head -n 200
+hw/tiny_npu/tiny_npu_top.sv:209:    //   - Graph DMA_LOAD copies artifact_ddr_mem -> graph_sram.
+hw/tiny_npu/tiny_npu_top.sv:210:    //   - Graph DMA_STORE copies graph_sram -> artifact_ddr_mem.
+hw/tiny_npu/tiny_npu_top.sv:244:    // Graph GEMM/Pool command stubs for schedule-level artifact demo.
+hw/tiny_npu/tiny_npu_top.sv:246:    // NOT produce numerically correct Conv/GEMM/Pool output. Golden alignment
+hw/tiny_npu/tiny_npu_top.sv:288:                $display("[%0t] GRAPH_FAST GEMM_STUB src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d",
+hw/tiny_npu/tiny_npu_top.sv:361:                            // DMA_LOAD: artifact DDR -> graph SRAM
+hw/tiny_npu/tiny_npu_top.sv:364:                            // DMA_STORE: graph SRAM -> artifact DDR
+hw/tiny_npu/tiny_npu_top.sv:734:        // GEMM
+hw/tiny_npu/tiny_npu_top.sv:783:        .kv_cmd_opcode      (),
+hw/tiny_npu/tiny_npu_top.sv:911:    // GEMM: generate done pulse one cycle after cmd_valid
+hw/tiny_npu/tiny_npu_top.sv:1159:// not final Conv/GEMM/ReLU golden correctness.
+hw/tiny_npu/ctrl/barrier.sv:5:// by an OP_BARRIER instruction, it stalls the decode pipeline until all
+hw/tiny_npu/ctrl/barrier.sv:18:    input  logic trigger,   // pulse: OP_BARRIER decoded
+hw/tiny_npu/ctrl/ucode_decode.sv:27:    // --- GEMM engine command ---
+hw/tiny_npu/ctrl/ucode_decode.sv:83:    output logic [7:0]          kv_cmd_opcode,
+hw/tiny_npu/ctrl/ucode_decode.sv:138:    logic [7:0]   dec_opcode;
+hw/tiny_npu/ctrl/ucode_decode.sv:149:        dec_opcode    = instr_data[7:0];
+hw/tiny_npu/ctrl/ucode_decode.sv:164:    logic        target_valid;       // opcode maps to a real engine
+hw/tiny_npu/ctrl/ucode_decode.sv:177:        case (dec_opcode)
+hw/tiny_npu/ctrl/ucode_decode.sv:178:            OP_NOP: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:181:            OP_DMA_LOAD: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:185:            OP_DMA_STORE: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:189:            OP_GEMM: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:190:                target_engine = ENG_GEMM;
+hw/tiny_npu/ctrl/ucode_decode.sv:193:            OP_VEC: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:197:            OP_SOFTMAX: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:198:                target_engine = ENG_SOFTMAX;
+hw/tiny_npu/ctrl/ucode_decode.sv:201:            OP_LAYERNORM: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:205:            OP_GELU: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:209:            OP_KV_APPEND: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:213:            OP_KV_READ: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:217:            OP_RMSNORM: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:221:            OP_ROPE: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:225:            OP_SILU: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:229:            OP_BARRIER: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:232:            OP_END: begin
+hw/tiny_npu/ctrl/ucode_decode.sv:248:    logic [7:0]          cmd_opcode_q;
+hw/tiny_npu/ctrl/ucode_decode.sv:264:    logic [7:0]          cmd_opcode_d;
+hw/tiny_npu/ctrl/ucode_decode.sv:286:        cmd_opcode_d      = cmd_opcode_q;
+hw/tiny_npu/ctrl/ucode_decode.sv:305:                        // OP_END: consume instruction, signal end
+hw/tiny_npu/ctrl/ucode_decode.sv:310:                        // OP_NOP: consume and discard
+hw/tiny_npu/ctrl/ucode_decode.sv:314:                        // OP_BARRIER: enter barrier wait state
+hw/tiny_npu/ctrl/ucode_decode.sv:322:                        cmd_opcode_d  = dec_opcode;
+hw/tiny_npu/ctrl/ucode_decode.sv:368:            cmd_opcode_q      <= '0;
+hw/tiny_npu/ctrl/ucode_decode.sv:384:            cmd_opcode_q      <= cmd_opcode_d;
+hw/tiny_npu/ctrl/ucode_decode.sv:404:    // -- GEMM --
+hw/tiny_npu/ctrl/ucode_decode.sv:405:    assign gemm_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_GEMM);
+hw/tiny_npu/ctrl/ucode_decode.sv:415:    assign softmax_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_SOFTMAX);
+hw/tiny_npu/ctrl/ucode_decode.sv:422:    assign layernorm_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_LAYERNORM);
+hw/tiny_npu/ctrl/ucode_decode.sv:429:    assign gelu_cmd_valid = cmd_valid_q && ((cmd_opcode_q == OP_GELU) || (cmd_opcode_q == OP_SILU));
+hw/tiny_npu/ctrl/ucode_decode.sv:434:    assign silu_mode      = cmd_valid_q && (cmd_opcode_q == OP_SILU);
+hw/tiny_npu/ctrl/ucode_decode.sv:437:    assign vec_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_VEC);
+hw/tiny_npu/ctrl/ucode_decode.sv:446:    assign dma_rd_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_DMA_LOAD);
+hw/tiny_npu/ctrl/ucode_decode.sv:453:    assign dma_wr_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_DMA_STORE);
+hw/tiny_npu/ctrl/ucode_decode.sv:460:    assign kv_cmd_valid  = cmd_valid_q && ((cmd_opcode_q == OP_KV_APPEND) ||
+hw/tiny_npu/ctrl/ucode_decode.sv:461:                                           (cmd_opcode_q == OP_KV_READ));
+hw/tiny_npu/ctrl/ucode_decode.sv:462:    assign kv_cmd_opcode = cmd_opcode_q;
+hw/tiny_npu/ctrl/ucode_decode.sv:480:    assign rmsnorm_cmd_valid = cmd_valid_q && (cmd_opcode_q == OP_RMSNORM);
+hw/tiny_npu/ctrl/ucode_decode.sv:487:    assign rope_cmd_valid      = cmd_valid_q && (cmd_opcode_q == OP_ROPE);
+hw/tiny_npu/ctrl/ucode_decode.sv:498:        decoded_instr.opcode    = cmd_opcode_q;
+hw/tiny_npu/ctrl/ucode_fetch.sv:65:    // OP_END detection on fetched data
+hw/tiny_npu/ctrl/ucode_fetch.sv:67:    assign fetched_is_end = (rd_data[7:0] == OP_END);
+hw/tiny_npu/ctrl/kv_ctrl.sv:21:    input  wire  [7:0]                   cmd_opcode,
+hw/tiny_npu/ctrl/kv_ctrl.sv:119:            op_r    <= cmd_opcode;
+hw/tiny_npu/ctrl/kv_ctrl.sv:198:                    if (cmd_opcode == OP_KV_APPEND)
+hw/tiny_npu/ctrl/kv_ctrl.sv:200:                    else if (cmd_opcode == OP_KV_READ) begin
+hw/tiny_npu/ops/vec_engine.sv:15:    input  logic [1:0]          opcode,       // 0=ADD 1=MUL 2=SCALE_SHIFT 3=CLAMP
+hw/tiny_npu/ops/vec_engine.sv:50:    localparam logic [1:0] OP_ADD         = 2'd0;
+hw/tiny_npu/ops/vec_engine.sv:51:    localparam logic [1:0] OP_MUL         = 2'd1;
+hw/tiny_npu/ops/vec_engine.sv:52:    localparam logic [1:0] OP_SCALE_SHIFT = 2'd2;
+hw/tiny_npu/ops/vec_engine.sv:53:    localparam logic [1:0] OP_CLAMP       = 2'd3;
+hw/tiny_npu/ops/vec_engine.sv:60:    logic [1:0]  r_opcode;
+hw/tiny_npu/ops/vec_engine.sv:105:            r_opcode     <= '0;
+hw/tiny_npu/ops/vec_engine.sv:118:            r_opcode     <= opcode;
+hw/tiny_npu/ops/vec_engine.sv:180:    assign sram_rd1_en   = (state == S_READ) && !r_copy2d && (r_opcode == OP_ADD || r_opcode == OP_MUL);
+hw/tiny_npu/ops/vec_engine.sv:203:        case (r_opcode)
+hw/tiny_npu/ops/vec_engine.sv:204:            OP_ADD: begin
+hw/tiny_npu/ops/vec_engine.sv:209:            OP_MUL: begin
+hw/tiny_npu/ops/vec_engine.sv:214:            OP_SCALE_SHIFT: begin
+hw/tiny_npu/ops/vec_engine.sv:219:            OP_CLAMP: begin
+hw/tiny_npu/pkg/kv_pkg.sv:4:// Documents how OP_KV_APPEND and OP_KV_READ instructions encode their fields
+hw/tiny_npu/pkg/kv_pkg.sv:19:    // Instruction field mapping for OP_KV_APPEND (opcode 8)
+hw/tiny_npu/pkg/kv_pkg.sv:31:    // Instruction field mapping for OP_KV_READ (opcode 9)
+hw/tiny_npu/pkg/isa_pkg.sv:2:// ISA Package - Microcode instruction format and opcode definitions
+hw/tiny_npu/pkg/isa_pkg.sv:15:        OP_NOP        = 8'd0,
+hw/tiny_npu/pkg/isa_pkg.sv:16:        OP_DMA_LOAD   = 8'd1,
+hw/tiny_npu/pkg/isa_pkg.sv:17:        OP_DMA_STORE  = 8'd2,
+hw/tiny_npu/pkg/isa_pkg.sv:18:        OP_GEMM       = 8'd3,
+hw/tiny_npu/pkg/isa_pkg.sv:19:        OP_VEC        = 8'd4,
+hw/tiny_npu/pkg/isa_pkg.sv:20:        OP_SOFTMAX    = 8'd5,
+hw/tiny_npu/pkg/isa_pkg.sv:21:        OP_LAYERNORM  = 8'd6,
+hw/tiny_npu/pkg/isa_pkg.sv:22:        OP_GELU       = 8'd7,
+hw/tiny_npu/pkg/isa_pkg.sv:23:        OP_KV_APPEND  = 8'd8,
+hw/tiny_npu/pkg/isa_pkg.sv:24:        OP_KV_READ    = 8'd9,
+hw/tiny_npu/pkg/isa_pkg.sv:25:        OP_BARRIER    = 8'd10,
+hw/tiny_npu/pkg/isa_pkg.sv:26:        OP_RMSNORM    = 8'd11,
+hw/tiny_npu/pkg/isa_pkg.sv:27:        OP_ROPE       = 8'd12,
+hw/tiny_npu/pkg/isa_pkg.sv:28:        OP_SILU       = 8'd13,
+hw/tiny_npu/pkg/isa_pkg.sv:29:        OP_END        = 8'd255
+hw/tiny_npu/pkg/isa_pkg.sv:30:    } opcode_t;
+hw/tiny_npu/pkg/isa_pkg.sv:43:    // DMA sub-types (flags[2:0] for DMA_LOAD/DMA_STORE)
+hw/tiny_npu/pkg/isa_pkg.sv:71:        logic [7:0]  opcode;     // [7:0]
+hw/tiny_npu/pkg/isa_pkg.sv:77:    function automatic logic [7:0] get_opcode(input logic [127:0] instr);
+hw/tiny_npu/pkg/isa_pkg.sv:115:        d.opcode    = raw[7:0];
+hw/tiny_npu/pkg/npu_pkg.sv:63:        ENG_GEMM      = 3'd0,
+hw/tiny_npu/pkg/npu_pkg.sv:64:        ENG_SOFTMAX   = 3'd1,
+hw/tiny_npu/mem/tile_buffer.sv:84:    // tile_done: placeholder, tied low (GEMM controller manages externally)
+hw/tiny_npu/gemm/gemm_ctrl.sv:2:// GEMM Controller - Tiled data flow for systolic array
+hw/tiny_npu/gemm/gemm_ctrl.sv:151:    // Helper: does this GEMM need multi-K-tile accumulation?
+hw/tiny_npu/gemm/gemm_post.sv:2:// GEMM Post-Processing: Bias add, requantize, ReLU, write back
+hw/tiny_npu/onnx_sim_top.sv:127:    // GEMM Engine: gemm_ctrl + systolic_array + ACC SRAM
+hw/tiny_npu/onnx_sim_top.sv:304:    logic [7:0]  gp_re_cmd_opcode;
+hw/tiny_npu/onnx_sim_top.sv:312:        .cmd_opcode     (gp_re_cmd_opcode),
+hw/tiny_npu/onnx_sim_top.sv:334:    logic [7:0]  gp_me_cmd_opcode;
+hw/tiny_npu/onnx_sim_top.sv:342:        .cmd_opcode   (gp_me_cmd_opcode),
+hw/tiny_npu/onnx_sim_top.sv:668:        // GEMM
+hw/tiny_npu/onnx_sim_top.sv:689:        .re_cmd_opcode     (gp_re_cmd_opcode),
+hw/tiny_npu/onnx_sim_top.sv:697:        .me_cmd_opcode (gp_me_cmd_opcode),
+hw/tiny_npu/graph/math_engine.sv:18:    input  wire  [7:0]             cmd_opcode,
+hw/tiny_npu/graph/math_engine.sv:60:    logic [7:0]            r_opcode;
+hw/tiny_npu/graph/math_engine.sv:139:    // LUT output mux based on opcode and dtype
+hw/tiny_npu/graph/math_engine.sv:142:        case (r_opcode)
+hw/tiny_npu/graph/math_engine.sv:143:            OP_G_EXP:   begin lut_result_int8 = exp_out;   lut_result_fp16 = exp_out_fp16;   end
+hw/tiny_npu/graph/math_engine.sv:144:            OP_G_LOG:   begin lut_result_int8 = log_out;   lut_result_fp16 = log_out_fp16;   end
+hw/tiny_npu/graph/math_engine.sv:145:            OP_G_SQRT:  begin lut_result_int8 = sqrt_out;  lut_result_fp16 = sqrt_out_fp16;  end
+hw/tiny_npu/graph/math_engine.sv:146:            OP_G_RSQRT: begin lut_result_int8 = rsqrt_out; lut_result_fp16 = rsqrt_out_fp16; end
+hw/tiny_npu/graph/math_engine.sv:211:            r_opcode     <= 8'h00;
+hw/tiny_npu/graph/math_engine.sv:236:                        r_opcode   <= cmd_opcode;
+hw/tiny_npu/graph/graph_dispatch.sv:10://   - Error detection (bad opcode, shape mismatch, timeout)
+hw/tiny_npu/graph/graph_dispatch.sv:42:    // GEMM engine command
+hw/tiny_npu/graph/graph_dispatch.sv:65:    output logic [7:0]              re_cmd_opcode,
+hw/tiny_npu/graph/graph_dispatch.sv:74:    output logic [7:0]              me_cmd_opcode,
+hw/tiny_npu/graph/graph_dispatch.sv:227:        GD_EXEC_GEMM,
+hw/tiny_npu/graph/graph_dispatch.sv:235:        GD_EXEC_SOFTMAX,
+hw/tiny_npu/graph/graph_dispatch.sv:236:        GD_EXEC_REDUCE,
+hw/tiny_npu/graph/graph_dispatch.sv:269:        WAIT_GEMM,
+hw/tiny_npu/graph/graph_dispatch.sv:270:        WAIT_SOFTMAX,
+hw/tiny_npu/graph/graph_dispatch.sv:272:        WAIT_REDUCE,
+hw/tiny_npu/graph/graph_dispatch.sv:341:                if (r_instr.opcode == OP_G_END) begin
+hw/tiny_npu/graph/graph_dispatch.sv:350:                end else if (r_instr.opcode == OP_G_BARRIER) begin
+hw/tiny_npu/graph/graph_dispatch.sv:359:                end else if (r_instr.opcode == OP_G_PREFETCH) begin
+hw/tiny_npu/graph/graph_dispatch.sv:374:                case (r_instr.opcode)
+hw/tiny_npu/graph/graph_dispatch.sv:375:                    OP_G_DMA_LOAD,
+hw/tiny_npu/graph/graph_dispatch.sv:376:                    OP_G_DMA_STORE,
+hw/tiny_npu/graph/graph_dispatch.sv:377:                    OP_G_DMA_STRIDED:  state_next = GD_EXEC_DMA;
+hw/tiny_npu/graph/graph_dispatch.sv:378:                    OP_G_PREFETCH:     state_next = GD_EXEC_DMA; // treat like DMA_LOAD
+hw/tiny_npu/graph/graph_dispatch.sv:379:                    OP_G_GEMM:         begin
+hw/tiny_npu/graph/graph_dispatch.sv:385:                            state_next = GD_EXEC_GEMM;
+hw/tiny_npu/graph/graph_dispatch.sv:387:                    OP_G_EW_ADD,
+hw/tiny_npu/graph/graph_dispatch.sv:388:                    OP_G_EW_MUL,
+hw/tiny_npu/graph/graph_dispatch.sv:389:                    OP_G_EW_SUB,
+hw/tiny_npu/graph/graph_dispatch.sv:390:                    OP_G_EW_MIN,
+hw/tiny_npu/graph/graph_dispatch.sv:391:                    OP_G_EW_MAX:       state_next = GD_EXEC_EW_INIT;
+hw/tiny_npu/graph/graph_dispatch.sv:392:                    OP_G_RELU:         state_next = GD_EXEC_RELU_INIT;
+hw/tiny_npu/graph/graph_dispatch.sv:393:                    OP_G_SOFTMAX:      state_next = GD_EXEC_SOFTMAX;
+hw/tiny_npu/graph/graph_dispatch.sv:394:                    OP_G_REDUCE_SUM,
+hw/tiny_npu/graph/graph_dispatch.sv:395:                    OP_G_REDUCE_MAX,
+hw/tiny_npu/graph/graph_dispatch.sv:396:                    OP_G_REDUCE_MEAN:  state_next = GD_EXEC_REDUCE;
+hw/tiny_npu/graph/graph_dispatch.sv:397:                    OP_G_EXP,
+hw/tiny_npu/graph/graph_dispatch.sv:398:                    OP_G_LOG,
+hw/tiny_npu/graph/graph_dispatch.sv:399:                    OP_G_SQRT,
+hw/tiny_npu/graph/graph_dispatch.sv:400:                    OP_G_RSQRT:        state_next = GD_EXEC_MATH;
+hw/tiny_npu/graph/graph_dispatch.sv:401:                    OP_G_GATHER:       state_next = GD_EXEC_GATHER;
+hw/tiny_npu/graph/graph_dispatch.sv:402:                    OP_G_SLICE:        state_next = GD_EXEC_SLICE;
+hw/tiny_npu/graph/graph_dispatch.sv:403:                    OP_G_CONCAT:       state_next = GD_EXEC_CONCAT;
+hw/tiny_npu/graph/graph_dispatch.sv:404:                    OP_G_AVGPOOL2D:    state_next = GD_EXEC_AVGPOOL;
+hw/tiny_npu/graph/graph_dispatch.sv:405:                    OP_G_MAXPOOL2D:    state_next = GD_EXEC_MAXPOOL;
+hw/tiny_npu/graph/graph_dispatch.sv:406:                    OP_G_PAD:          state_next = GD_EXEC_PAD;
+hw/tiny_npu/graph/graph_dispatch.sv:407:                    OP_G_RESIZE_NEAREST: state_next = GD_EXEC_RESIZE;
+hw/tiny_npu/graph/graph_dispatch.sv:408:                    OP_G_CAST:         state_next = GD_EXEC_CAST;
+hw/tiny_npu/graph/graph_dispatch.sv:409:                    OP_G_BARRIER:      state_next = GD_NEXT;
+hw/tiny_npu/graph/graph_dispatch.sv:415:            GD_EXEC_GEMM:    state_next = GD_WAIT_DONE;
+hw/tiny_npu/graph/graph_dispatch.sv:416:            GD_EXEC_SOFTMAX: state_next = GD_WAIT_DONE;
+hw/tiny_npu/graph/graph_dispatch.sv:417:            GD_EXEC_REDUCE:  state_next = GD_WAIT_DONE;
+hw/tiny_npu/graph/graph_dispatch.sv:466:                        WAIT_GEMM:    if (gm_done)  state_next = GD_NEXT;
+hw/tiny_npu/graph/graph_dispatch.sv:467:                        WAIT_SOFTMAX: if (sm_done)  state_next = GD_NEXT;
+hw/tiny_npu/graph/graph_dispatch.sv:469:                        WAIT_REDUCE:  if (re_done)  state_next = GD_NEXT;
+hw/tiny_npu/graph/graph_dispatch.sv:516:        re_cmd_opcode     = '0;
+hw/tiny_npu/graph/graph_dispatch.sv:522:        me_cmd_opcode = '0;
+hw/tiny_npu/graph/graph_dispatch.sv:630:                if (r_instr.opcode == OP_G_DMA_LOAD || r_instr.opcode == OP_G_PREFETCH) begin
+hw/tiny_npu/graph/graph_dispatch.sv:635:                end else if (r_instr.opcode == OP_G_DMA_STORE) begin
+hw/tiny_npu/graph/graph_dispatch.sv:652:            GD_EXEC_GEMM: begin
+hw/tiny_npu/graph/graph_dispatch.sv:665:            GD_EXEC_SOFTMAX: begin
+hw/tiny_npu/graph/graph_dispatch.sv:673:            GD_EXEC_REDUCE: begin
+hw/tiny_npu/graph/graph_dispatch.sv:675:                re_cmd_opcode     = r_instr.opcode;
+hw/tiny_npu/graph/graph_dispatch.sv:684:                me_cmd_opcode = r_instr.opcode;
+hw/tiny_npu/graph/graph_dispatch.sv:800:                    case (r_instr.opcode)
+hw/tiny_npu/graph/graph_dispatch.sv:801:                        OP_G_EW_ADD: result = a_ext + b_ext;
+hw/tiny_npu/graph/graph_dispatch.sv:802:                        OP_G_EW_MUL: result = (a_ext * b_ext) >>> 7;
+hw/tiny_npu/graph/graph_dispatch.sv:803:                        OP_G_EW_SUB: result = a_ext - b_ext;
+hw/tiny_npu/graph/graph_dispatch.sv:804:                        OP_G_EW_MIN: result = (a_ext < b_ext) ? a_ext : b_ext;
+hw/tiny_npu/graph/graph_dispatch.sv:805:                        OP_G_EW_MAX: result = (a_ext > b_ext) ? a_ext : b_ext;
+hw/tiny_npu/graph/graph_dispatch.sv:953:                    WAIT_GEMM:    perf_gemm_cycles    <= perf_gemm_cycles    + 32'd1;
+hw/tiny_npu/graph/graph_dispatch.sv:954:                    WAIT_SOFTMAX: perf_softmax_cycles <= perf_softmax_cycles + 32'd1;
+hw/tiny_npu/graph/graph_dispatch.sv:956:                    WAIT_REDUCE:  perf_reduce_cycles  <= perf_reduce_cycles  + 32'd1;
+hw/tiny_npu/graph/graph_dispatch.sv:970:            // Overlap cycles: DMA and GEMM both in-flight simultaneously
+hw/tiny_npu/graph/graph_dispatch.sv:1022:                        dbg_last_op <= instr_in.opcode;
+hw/tiny_npu/graph/graph_dispatch.sv:1036:                    // Valid opcode check
+hw/tiny_npu/graph/graph_dispatch.sv:1037:                    case (r_instr.opcode)
+hw/tiny_npu/graph/graph_dispatch.sv:1038:                        OP_G_DMA_LOAD, OP_G_DMA_STORE, OP_G_DMA_STRIDED,
+yangshengquan@userroot:~/new_cheshire/cheshire$ 
