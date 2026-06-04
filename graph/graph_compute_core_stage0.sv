@@ -774,19 +774,19 @@ end
                     end
                 end
 
-                if ((dma_dbg_wr_count < 8) || ((dma_dbg_wr_count % 32'd8192) == 0)) begin
-                    $display("[%0t] GRAPH_SRAM_DMA_WR addr=0x%04x data=0x%016x mask=0x%02x count=%0d",
-                             $time, dma_sram_wr_addr, dma_sram_wr_data, dma_sram_wr_mask, dma_dbg_wr_count);
-                end
+                // if ((dma_dbg_wr_count < 8) || ((dma_dbg_wr_count % 32'd8192) == 0)) begin
+                //     $display("[%0t] GRAPH_SRAM_DMA_WR addr=0x%04x data=0x%016x mask=0x%02x count=%0d",
+                //              $time, dma_sram_wr_addr, dma_sram_wr_data, dma_sram_wr_mask, dma_dbg_wr_count);
+                // end
                 dma_dbg_wr_count <= dma_dbg_wr_count + 1'b1;
 
             end else if (gemm_sram_wr_en) begin
                 sram0[gemm_sram_wr_addr] <= gemm_sram_wr_data;
 
-                if ((gemm_dbg_wr_count < 8) || ((gemm_dbg_wr_count % 32'd4096) == 0)) begin
-                    $display("[%0t] GRAPH_GEMM_REAL_WR dst=0x%04x data=0x%02x count=%0d busy=%0d",
-                             $time, gemm_sram_wr_addr, gemm_sram_wr_data, gemm_dbg_wr_count, gemm_busy);
-                end
+                // if ((gemm_dbg_wr_count < 8) || ((gemm_dbg_wr_count % 32'd4096) == 0)) begin
+                //     $display("[%0t] GRAPH_GEMM_REAL_WR dst=0x%04x data=0x%02x count=%0d busy=%0d",
+                //              $time, gemm_sram_wr_addr, gemm_sram_wr_data, gemm_dbg_wr_count, gemm_busy);
+                // end
                 gemm_dbg_wr_count <= gemm_dbg_wr_count + 1'b1;
 
             end else if (sm_wr_en) begin
@@ -826,13 +826,13 @@ end
                 sram0[ew_wr_addr] <= ew_wr_data;
             end
 
-            if (gm_cmd_valid && !gemm_busy) begin
-                $display("[%0t] GRAPH_GEMM_REAL_START src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d flags=0x%02x imm=0x%04x dtype=%0d",
-                         $time,
-                         gm_cmd_src0, gm_cmd_src1, gm_cmd_dst,
-                         gm_cmd_M, gm_cmd_N, gm_cmd_K,
-                         gm_cmd_flags, gm_cmd_imm, gm_cmd_dtype);
-            end
+            // if (gm_cmd_valid && !gemm_busy) begin
+            //     $display("[%0t] GRAPH_GEMM_REAL_START src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d flags=0x%02x imm=0x%04x dtype=%0d",
+            //              $time,
+            //              gm_cmd_src0, gm_cmd_src1, gm_cmd_dst,
+            //              gm_cmd_M, gm_cmd_N, gm_cmd_K,
+            //              gm_cmd_flags, gm_cmd_imm, gm_cmd_dtype);
+            // end
         end
     end
 
@@ -1047,6 +1047,7 @@ logic [1:0] dbg_dump_req;
         ga_done  | sl_done | ct_done | ap_done |
         mp_done  | pd_done | rz_done | ca_done;
 
+`ifdef SYNTHESIS
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             dbg_prev_pc <= '0;
@@ -1140,6 +1141,7 @@ logic [1:0] dbg_dump_req;
             end
         end
     end
+`endif
 
 endmodule
 
