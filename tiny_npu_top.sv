@@ -259,14 +259,6 @@ end
 
     logic        artifact_dma_done_pulse;
 
-    // 64-bit/cycle access port into u_graph_core's owned SRAM0.
-    logic        graph_sram_dma_wr_en;
-    logic [15:0] graph_sram_dma_wr_addr;
-    logic [63:0] graph_sram_dma_wr_data;
-    logic [7:0]  graph_sram_dma_wr_mask;
-    logic        graph_sram_dma_rd_en;
-    logic [15:0] graph_sram_dma_rd_addr;
-    logic [63:0] graph_sram_dma_rd_data;
 
     // artifact_fast DMA streaming state.
     logic        artifact_dma_busy;
@@ -279,6 +271,7 @@ end
     // Real external DDR DMA state.
     // When artifact_fast_en=0, axi_dma_rd/axi_dma_wr are the real DDR path.
     // These state registers bridge AXI streaming data and u_graph_core's owned SRAM0.
+    logic [63:0] graph_sram_dma_rd_data;
     logic        real_dma_load_active;
     logic [15:0] real_dma_load_sram_addr_q;
     logic [15:0] real_dma_load_len_q;
@@ -335,6 +328,7 @@ end
     logic [7:0]  graph_ap_cmd_kh, graph_ap_cmd_kw, graph_ap_cmd_sh, graph_ap_cmd_sw;
     logic [7:0]  graph_mp_cmd_kh, graph_mp_cmd_kw, graph_mp_cmd_sh, graph_mp_cmd_sw;
 
+`ifndef SYNTHESIS
     // one-shot done pulses for schedule-level demo
     logic [7:0] graph_gm_timer, graph_ap_timer, graph_mp_timer;
     logic       graph_gm_busy,  graph_ap_busy,  graph_mp_busy;
@@ -400,7 +394,6 @@ end
         end
     end
 
-
     
     // Fast graph DMA copy.
     // This version streams up to 8 bytes/cycle between top-level artifact_ddr_mem
@@ -418,6 +411,15 @@ end
     // drives graph_sram_dma_wr_* so u_graph_core can write its internal SRAM0.
     // STORE reads u_graph_core SRAM0 through graph_sram_dma_rd_* and feeds
     // axi_dma_wr through dma_wr_data_in.
+        // 64-bit/cycle access port into u_graph_core's owned SRAM0.
+    logic        graph_sram_dma_wr_en;
+    logic [15:0] graph_sram_dma_wr_addr;
+    logic [63:0] graph_sram_dma_wr_data;
+    logic [7:0]  graph_sram_dma_wr_mask;
+    logic        graph_sram_dma_rd_en;
+    logic [15:0] graph_sram_dma_rd_addr;
+  
+
     always_comb begin : p_graph_sram_dma_comb
         integer lane;
         integer ddr_byte_addr;
@@ -558,8 +560,7 @@ end
             end
         end
     end
-
-
+`endif
 
     // Real external-DDR Graph DMA stream control.
     // This block replaces the old dma_smoke_buf path for graph_mode.
@@ -583,7 +584,7 @@ end
                 real_dma_load_sram_addr_q <= graph_dma_sram_addr;
                 real_dma_load_len_q       <= graph_dma_length;
                 real_dma_load_pos_q       <= 16'd0;
-                $display("[%0t] REAL_DMA_LOAD_START sram=0x%04x len=%0d",
+                // $display("[%0t] REAL_DMA_LOAD_START sram=0x%04x len=%0d",
                          $time, graph_dma_sram_addr, graph_dma_length);
             end else if (real_dma_load_active && dma_rd_data_valid && dma_rd_data_ready) begin
                 if (real_dma_load_pos_q + 16'd8 >= real_dma_load_len_q) begin
@@ -593,7 +594,7 @@ end
                 end
 
                 if (real_dma_load_pos_q < 16'd64) begin
-                    $display("[%0t] REAL_DMA_LOAD_WR sram=0x%04x data=0x%016x pos=%0d last=%0d",
+                    // $display("[%0t] REAL_DMA_LOAD_WR sram=0x%04x data=0x%016x pos=%0d last=%0d",
                              $time,
                              real_dma_load_sram_addr_q + real_dma_load_pos_q,
                              dma_rd_data[63:0],
@@ -604,7 +605,7 @@ end
 
             if (dma_rd_done) begin
                 if (real_dma_load_active) begin
-                    $display("[%0t] REAL_DMA_LOAD_DONE sram=0x%04x len=%0d pos=%0d",
+                    // $display("[%0t] REAL_DMA_LOAD_DONE sram=0x%04x len=%0d pos=%0d",
                              $time,
                              real_dma_load_sram_addr_q,
                              real_dma_load_len_q,
@@ -651,6 +652,8 @@ end
             end
         end
     end
+
+
 
     wire rst_int_n;
     assign rst_int_n = rst_n & ~soft_reset;
