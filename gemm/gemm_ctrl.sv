@@ -199,8 +199,9 @@ module gemm_ctrl
             end
 
             ST_STREAM: begin
-                if (stream_cnt == stream_total)
+                if (stream_cnt == stream_total) begin
                     state_next = ST_STORE;
+                end
             end
 
             ST_STORE: begin
@@ -266,6 +267,8 @@ module gemm_ctrl
     // =========================================================================
     logic [7:0] acc_elem_addr;
     assign acc_elem_addr = {3'b0, store_row} * {3'b0, n_eff} + {3'b0, store_col};
+
+    logic dbg_printed_first_gemm;
 
     // =========================================================================
     // Output logic (active-low reset defaults)
@@ -408,15 +411,44 @@ module gemm_ctrl
                                 // Last K-tile INT8: accumulate, requantize, write to output SRAM
                                 sram_wr_en   = 1'b1;
                                 sram_wr_addr = c_tile_base + {11'b0, store_row} * r_N + {11'b0, store_col};
-                                if (r_do_requant)
-                                    sram_wr_data = requantize(
-                                        acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]],
-                                        r_scale, r_shift);
-                                else
-                                    sram_wr_data = saturate_i8(
-                                        acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]]);
+                                
+                                if (r_do_requant) begin
+                                sram_wr_data = requantize(
+                                    acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]],
+                                    r_scale, r_shift);
+
+                            
+                                // if (state == ST_IDLE && cmd_valid) begin
+                                //     dbg_printed_first_gemm <= 1'b0;
+                                //     end
+                                //     else if (!dbg_printed_first_gemm &&
+                                //         state == ST_STORE &&
+                                //         last_k_tile && !r_dtype && store_phase &&
+                                //         (m_tile_r == 4'd0) &&
+                                //         (n_tile_r == 4'd0) &&
+                                //         (k_tile_r == k_tiles_r - 4'd1) &&
+                                //         (store_row == 5'd0) &&
+                                //         (store_col < 5'd16)) begin
+                                //         $display("[%0t] GEMM_QDBG m_tile=%0d n_tile=%0d k_tile=%0d row=%0d col=%0d acc_old=%0d sa_acc=%0d acc_sum=%0d requant=%0d scale=%0d shift=%0d transpose_b=%0d out=0x%02x",
+                                //              $time,
+                                //              m_tile_r, n_tile_r, k_tile_r,
+                                //              store_row, store_col,
+                                //              acc_rd_data,
+                                //              sa_acc[store_row[3:0]][store_col[3:0]],
+                                //              acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]],
+                                //              requantize(acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]], r_scale, r_shift),
+                                //              r_scale, r_shift, r_transpose_b, sram_wr_data);
+                                //     end
+                                    
+
+
+                            end else begin
+                                sram_wr_data = saturate_i8(
+                                    acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]]);
                             end
-                        end else begin
+
+                            end
+                            end else begin
                             // Middle K-tile: accumulate and write back to ACC SRAM
                             acc_wr_en   = 1'b1;
                             acc_wr_addr = acc_elem_addr;
@@ -473,6 +505,8 @@ module gemm_ctrl
             stream_total  <= '0;
             store_row     <= '0;
             store_col     <= '0;
+
+            
             for (int i = 0; i < ARRAY_M; i++)
                 for (int j = 0; j < ARRAY_N; j++)
                     buf_a[i][j] <= '0;
