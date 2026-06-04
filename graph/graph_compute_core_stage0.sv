@@ -131,7 +131,7 @@ module graph_compute_core_stage0 #(
     // -------------------------------------------------------------------------
     // Owned SRAM0
     // -------------------------------------------------------------------------
-    localparam int SRAM0_DEPTH = (2 << SRAM0_AW);
+    localparam int SRAM0_DEPTH = (1 << SRAM0_AW);
     logic [7:0] sram0 [0:SRAM0_DEPTH-1];
 
 
@@ -1018,11 +1018,33 @@ end
         .graph_last_op  (graph_last_op)
     );
 
+
+sram_dp #(.DEPTH(SRAM0_DEPTH), .WIDTH(8)) sram0 (
+        .clk    (clk),
+        .en_a   (),
+        .we_a   (),
+        .addr_a (),
+        .din_a  (),
+        .dout_a (),
+        .en_b   (),
+        .we_b   (),
+        .addr_b (),
+        .din_b  (),
+        .dout_b ()
+    );
+
+
+
+
+
+
+`ifdef SYNTHESIS
     // -------------------------------------------------------------------------
     // Debug prints
     // -------------------------------------------------------------------------
-    parameter int DBG_LEVEL = 1;
-    parameter int DBG_HEARTBEAT_CYCLES = 100_000;
+
+parameter int DBG_LEVEL = 1;
+parameter int DBG_HEARTBEAT_CYCLES = 100_000;
 
 localparam logic [1:0] DBG_DUMP_NONE = 2'd0;
 localparam logic [1:0] DBG_DUMP_GEMM = 2'd1;
@@ -1047,7 +1069,7 @@ logic [1:0] dbg_dump_req;
         ga_done  | sl_done | ct_done | ap_done |
         mp_done  | pd_done | rz_done | ca_done;
 
-`ifdef SYNTHESIS
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             dbg_prev_pc <= '0;
