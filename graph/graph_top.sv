@@ -442,23 +442,67 @@ module graph_top
     // Status aggregation
     // =========================================================================
     logic done_latch;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            done_latch <= 1'b0;
-        else if (start)
-            done_latch <= 1'b0;
-        else if (disp_done || fetch_done)
-            done_latch <= 1'b1;
+
+    wire pc_reach_end;
+assign pc_reach_end = (prog_len != 16'd0) && (disp_pc >= prog_len);
+
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        done_latch <= 1'b0;
+    end else if (start) begin
+        done_latch <= 1'b0;
+    end else if (disp_done) begin
+        done_latch <= 1'b1;
+    end else if (fetch_done && !disp_busy) begin
+        done_latch <= 1'b1;
+    end else if (pc_reach_end) begin
+        done_latch <= 1'b1;
     end
+end
 
     assign graph_done   = done_latch;
-    assign graph_busy   = disp_busy || fetch_busy;
+    assign graph_busy    = !done_latch && (disp_busy || fetch_busy);
     assign ew_busy      = ew_rd_en || ew_wr_en;
     assign graph_pc     = disp_pc;
     assign graph_last_op = disp_last_op;
 
     // Status register: [2]=error, [1]=busy, [0]=done
     assign graph_status = {24'd0, disp_error_code[4:0], disp_error, graph_busy, done_latch};
+
+
+
+    `ifndef SYNTHESIS
+logic [31:0] graph_top_dbg_cnt;
+
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        graph_top_dbg_cnt <= 32'd0;
+    end else if (!graph_busy) begin
+        graph_top_dbg_cnt <= 32'd0;
+    end else begin
+        graph_top_dbg_cnt <= graph_top_dbg_cnt + 1'b1;
+
+        if ((graph_top_dbg_cnt % 50000) == 0) begin
+            $display("[%0t] GRAPH_TOP_DBG prog_len=%0d fetch_busy=%0d fetch_done=%0d fetch_valid=%0d fetch_ready=%0d fetch_pc=%0d disp_busy=%0d disp_done=%0d disp_error=%0d disp_pc=%0d disp_last_op=0x%02x pc_reach_end=%0d done_latch=%0d graph_busy=%0d",
+                     $time,
+                     prog_len,
+                     fetch_busy,
+                     fetch_done,
+                     fetch_instr_valid,
+                     fetch_instr_ready,
+                     fetch_pc,
+                     disp_busy,
+                     disp_done,
+                     disp_error,
+                     disp_pc,
+                     disp_last_op,
+                     pc_reach_end,
+                     done_latch,
+                     graph_busy);
+        end
+    end
+end
+`endif
 
 endmodule
 
