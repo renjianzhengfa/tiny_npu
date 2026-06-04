@@ -1347,9 +1347,19 @@ end
 ////
 //// GRAPH
 ////
+logic graph_sram_dma_rd_valid_q;
 
-assign dma_wr_data_valid = graph_mode ? real_dma_store_active
+always_ff @(posedge clk or negedge rst_int_n) begin
+  if (!rst_int_n) begin
+    graph_sram_dma_rd_valid_q <= 1'b0;
+  end else begin
+    graph_sram_dma_rd_valid_q <= graph_sram_dma_rd_en;
+  end
+end
+
+assign dma_wr_data_valid = graph_mode ? graph_sram_dma_rd_valid_q
                                       : (dma_smoke_count != 0);
+                                      
 assign dma_wr_data_in    = graph_mode ? {{(P_AXI_DATA_W-64){1'b0}}, graph_sram_dma_rd_data}
                                       : dma_smoke_buf[dma_smoke_rd_ptr];
 assign dma_wr_data_last  = graph_mode ? (real_dma_store_active &&
