@@ -21,6 +21,16 @@
 
 `default_nettype none
 
+`ifndef SYNTHESIS
+  `ifdef NPU_SIM_DEBUG
+    `define NPU_DBG(args) $display args
+  `else
+    `define NPU_DBG(args)
+  `endif
+`else
+  `define NPU_DBG(args)
+`endif
+
 module graph_compute_core_stage0 #(
     parameter int PROG_SRAM_AW = 9,
     parameter int SRAM0_AW     = 16,
@@ -131,15 +141,13 @@ module graph_compute_core_stage0 #(
     // -------------------------------------------------------------------------
     // Owned SRAM0
     // -------------------------------------------------------------------------
-    localparam int SRAM0_DEPTH = (1 << SRAM0_AW);
-    logic [7:0] sram0 [0:SRAM0_DEPTH-1];
-
 
 ////////////////////////////////////////////
 // -------------------------------------------------------------------------
 // Debug helper: dump SRAM0[0x5a00 : 0x5a3f]
 // Only for simulation/debug.
 // -------------------------------------------------------------------------
+`ifdef SYNTHESIS
 task automatic dump_sram0_5a00(input string tag);
     logic [63:0] word64;
     int off;
@@ -160,6 +168,8 @@ begin
     $display("[%0t] ===== SRAM0_DUMP_END %s =====", $time, tag);
 end
 endtask
+`endif
+
 /////////////////////////////////////////
 
 
@@ -391,8 +401,6 @@ end
     logic        sm_busy;
     logic        sm_rd_en;
     logic [SRAM0_AW-1:0] sm_rd_addr;
-    logic [7:0]  sm_rd_data;
-    assign sm_rd_data = sram0[sm_rd_addr];
     logic        sm_wr_en;
     logic [SRAM0_AW-1:0] sm_wr_addr;
     logic [7:0]  sm_wr_data;
@@ -455,7 +463,6 @@ end
     logic        re_rd_en, re_wr_en;
     logic [SRAM0_AW-1:0] re_rd_addr, re_wr_addr;
     logic [7:0]  re_rd_data, re_wr_data;
-    assign re_rd_data = sram0[re_rd_addr];
 
     reduce_engine #(.SRAM0_AW(SRAM0_AW)) u_reduce (
         .clk            (clk),
@@ -481,7 +488,6 @@ end
     logic        me_rd_en, me_wr_en;
     logic [SRAM0_AW-1:0] me_rd_addr, me_wr_addr;
     logic [7:0]  me_rd_data, me_wr_data;
-    assign me_rd_data = sram0[me_rd_addr];
 
     math_engine #(.SRAM0_AW(SRAM0_AW)) u_math (
         .clk          (clk),
@@ -507,7 +513,6 @@ end
     logic        ga_rd_en, ga_wr_en;
     logic [SRAM0_AW-1:0] ga_rd_addr, ga_wr_addr;
     logic [7:0]  ga_rd_data, ga_wr_data;
-    assign ga_rd_data = sram0[ga_rd_addr];
 
     gather_engine #(.SRAM0_AW(SRAM0_AW)) u_gather (
         .clk            (clk),
@@ -534,7 +539,6 @@ end
     logic        sl_rd_en, sl_wr_en;
     logic [SRAM0_AW-1:0] sl_rd_addr, sl_wr_addr;
     logic [7:0]  sl_rd_data, sl_wr_data;
-    assign sl_rd_data = sram0[sl_rd_addr];
 
     slice_engine #(.SRAM0_AW(SRAM0_AW)) u_slice (
         .clk             (clk),
@@ -561,7 +565,6 @@ end
     logic        ct_rd_en, ct_wr_en;
     logic [SRAM0_AW-1:0] ct_rd_addr, ct_wr_addr;
     logic [7:0]  ct_rd_data, ct_wr_data;
-    assign ct_rd_data = sram0[ct_rd_addr];
 
     concat_engine #(.SRAM0_AW(SRAM0_AW)) u_concat (
         .clk              (clk),
@@ -589,7 +592,6 @@ end
     logic        ap_wr_en;
     logic [SRAM0_AW-1:0] ap_wr_addr;
     logic [7:0]  ap_rd_data, ap_wr_data;
-    assign ap_rd_data = sram0[ap_rd_addr];
 
     avgpool2d_engine #(.SRAM0_AW(SRAM0_AW)) u_avgpool2d (
         .clk           (clk),
@@ -624,7 +626,6 @@ end
     logic        mp_wr_en;
     logic [SRAM0_AW-1:0] mp_wr_addr;
     logic [7:0]  mp_rd_data, mp_wr_data;
-    assign mp_rd_data = sram0[mp_rd_addr];
 
     maxpool2d_engine #(.SRAM0_AW(SRAM0_AW)) u_maxpool2d (
         .clk           (clk),
@@ -655,7 +656,6 @@ end
     logic        pd_wr_en;
     logic [SRAM0_AW-1:0] pd_wr_addr;
     logic [7:0]  pd_rd_data, pd_wr_data;
-    assign pd_rd_data = sram0[pd_rd_addr];
 
     pad_engine #(.SRAM0_AW(SRAM0_AW)) u_pad (
         .clk             (clk),
@@ -686,7 +686,6 @@ end
     logic        rz_wr_en;
     logic [SRAM0_AW-1:0] rz_wr_addr;
     logic [7:0]  rz_rd_data, rz_wr_data;
-    assign rz_rd_data = sram0[rz_rd_addr];
 
     resize_nearest_engine #(.SRAM0_AW(SRAM0_AW)) u_resize_nearest (
         .clk           (clk),
@@ -715,7 +714,6 @@ end
     logic        ca_wr_en;
     logic [SRAM0_AW-1:0] ca_wr_addr;
     logic [7:0]  ca_rd_data, ca_wr_data;
-    assign ca_rd_data = sram0[ca_rd_addr];
 
     cast_engine #(.SRAM0_AW(SRAM0_AW)) u_cast (
         .clk           (clk),
@@ -746,95 +744,6 @@ end
         {4{1'b0}}, ct_busy,
         sl_busy, ga_busy, me_busy, re_busy, sm_busy
     };
-
-    // -------------------------------------------------------------------------
-    // The single SRAM0 write owner.
-    //
-    // This is the point where all hardware engines are really connected to SRAM0.
-    // Priority is deterministic and suitable for SERIAL Graph scheduling:
-    // DMA_LOAD > GEMM > Softmax > Reduce > Math > Gather > Slice > Concat
-    //          > AvgPool > MaxPool > Pad > Resize > Cast > EW/ReLU.
-    //
-    // If scheduler_mode enables overlap later, replace this priority chain with
-    // a true SRAM0 arbiter / BRAM port scheduler.
-    // -------------------------------------------------------------------------
-
-    logic [31:0] aux_dbg_wr_count;
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            dma_dbg_wr_count  <= 32'd0;
-            gemm_dbg_wr_count <= 32'd0;
-            aux_dbg_wr_count  <= 32'd0;
-        end else begin
-            if (dma_sram_wr_en) begin
-                for (int k = 0; k < 8; k++) begin
-                    if (dma_sram_wr_mask[k]) begin
-                        sram0[(dma_sram_wr_addr + k[SRAM0_AW-1:0])] <= dma_sram_wr_data[8*k +: 8];      //64 to 8bit
-                    end
-                end
-
-                // if ((dma_dbg_wr_count < 8) || ((dma_dbg_wr_count % 32'd8192) == 0)) begin
-                //     $display("[%0t] GRAPH_SRAM_DMA_WR addr=0x%04x data=0x%016x mask=0x%02x count=%0d",
-                //              $time, dma_sram_wr_addr, dma_sram_wr_data, dma_sram_wr_mask, dma_dbg_wr_count);
-                // end
-                dma_dbg_wr_count <= dma_dbg_wr_count + 1'b1;
-
-            end else if (gemm_sram_wr_en) begin
-                sram0[gemm_sram_wr_addr] <= gemm_sram_wr_data;
-
-                // if ((gemm_dbg_wr_count < 8) || ((gemm_dbg_wr_count % 32'd4096) == 0)) begin
-                //     $display("[%0t] GRAPH_GEMM_REAL_WR dst=0x%04x data=0x%02x count=%0d busy=%0d",
-                //              $time, gemm_sram_wr_addr, gemm_sram_wr_data, gemm_dbg_wr_count, gemm_busy);
-                // end
-                gemm_dbg_wr_count <= gemm_dbg_wr_count + 1'b1;
-
-            end else if (sm_wr_en) begin
-                sram0[sm_wr_addr] <= sm_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (re_wr_en) begin
-                sram0[re_wr_addr] <= re_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (me_wr_en) begin
-                sram0[me_wr_addr] <= me_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (ga_wr_en) begin
-                sram0[ga_wr_addr] <= ga_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (sl_wr_en) begin
-                sram0[sl_wr_addr] <= sl_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (ct_wr_en) begin
-                sram0[ct_wr_addr] <= ct_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (ap_wr_en) begin
-                sram0[ap_wr_addr] <= ap_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (mp_wr_en) begin
-                sram0[mp_wr_addr] <= mp_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (pd_wr_en) begin
-                sram0[pd_wr_addr] <= pd_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (rz_wr_en) begin
-                sram0[rz_wr_addr] <= rz_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (ca_wr_en) begin
-                sram0[ca_wr_addr] <= ca_wr_data;
-                aux_dbg_wr_count <= aux_dbg_wr_count + 1'b1;
-            end else if (ew_wr_en) begin
-                sram0[ew_wr_addr] <= ew_wr_data;
-            end
-
-            // if (gm_cmd_valid && !gemm_busy) begin
-            //     $display("[%0t] GRAPH_GEMM_REAL_START src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d flags=0x%02x imm=0x%04x dtype=%0d",
-            //              $time,
-            //              gm_cmd_src0, gm_cmd_src1, gm_cmd_dst,
-            //              gm_cmd_M, gm_cmd_N, gm_cmd_K,
-            //              gm_cmd_flags, gm_cmd_imm, gm_cmd_dtype);
-            // end
-        end
-    end
 
     // -------------------------------------------------------------------------
     // graph_top
@@ -1019,26 +928,370 @@ end
     );
 
 
-sram_dp #(.DEPTH(SRAM0_DEPTH), .WIDTH(8)) sram0 (
-        .clk    (clk),
-        .en_a   (),
-        .we_a   (),
-        .addr_a (),
-        .din_a  (),
-        .dout_a (),
-        .en_b   (),
-        .we_b   (),
-        .addr_b (),
-        .din_b  (),
-        .dout_b ()
+
+// -------------------------------------------------------------------------
+// Owned SRAM0: 8-bank BRAM version
+// -------------------------------------------------------------------------
+localparam int SRAM0_DEPTH      = (1 << SRAM0_AW);      // bytes
+localparam int SRAM0_NUM_BANKS  = 8;
+localparam int SRAM0_BANK_AW    = SRAM0_AW - 3;
+localparam int SRAM0_BANK_DEPTH = (1 << SRAM0_BANK_AW);
+
+typedef enum logic [3:0] {
+  SRAM_RD_NONE = 4'd0,
+  SRAM_RD_GEMM = 4'd1,
+  SRAM_RD_EW   = 4'd2,
+  SRAM_RD_SM   = 4'd3,
+  SRAM_RD_RE   = 4'd4,
+  SRAM_RD_ME   = 4'd5,
+  SRAM_RD_GA   = 4'd6,
+  SRAM_RD_SL   = 4'd7,
+  SRAM_RD_CT   = 4'd8,
+  SRAM_RD_AP   = 4'd9,
+  SRAM_RD_MP   = 4'd10,
+  SRAM_RD_PD   = 4'd11,
+  SRAM_RD_RZ   = 4'd12,
+  SRAM_RD_CA   = 4'd13
+} sram0_rd_src_e;
+
+function automatic logic [2:0] sram0_bank(input logic [SRAM0_AW-1:0] byte_addr);
+  return byte_addr[2:0];
+endfunction
+
+function automatic logic [SRAM0_BANK_AW-1:0] sram0_row(input logic [SRAM0_AW-1:0] byte_addr);
+  return byte_addr[SRAM0_AW-1:3];
+endfunction
+
+// Port A: byte read arbiter
+logic                         sram0_a_en   [SRAM0_NUM_BANKS];
+logic                         sram0_a_we   [SRAM0_NUM_BANKS];
+logic [SRAM0_BANK_AW-1:0]      sram0_a_addr [SRAM0_NUM_BANKS];
+logic [7:0]                   sram0_a_din  [SRAM0_NUM_BANKS];
+logic [7:0]                   sram0_a_dout [SRAM0_NUM_BANKS];
+
+// Port B: DMA read/write + byte write arbiter
+logic                         sram0_b_en   [SRAM0_NUM_BANKS];
+logic                         sram0_b_we   [SRAM0_NUM_BANKS];
+logic [SRAM0_BANK_AW-1:0]      sram0_b_addr [SRAM0_NUM_BANKS];
+logic [7:0]                   sram0_b_din  [SRAM0_NUM_BANKS];
+logic [7:0]                   sram0_b_dout [SRAM0_NUM_BANKS];
+
+sram0_rd_src_e sram0_rd_src_d, sram0_rd_src_q;
+logic [2:0]    sram0_rd_bank_d, sram0_rd_bank_q;
+
+logic dma_sram_rd_en_q;
+logic [2:0] dma_rd_bank_q [8];
+
+
+    // -------------------------------------------------------------------------
+    // The single SRAM0 write owner.
+    //
+    // This is the point where all hardware engines are really connected to SRAM0.
+    // Priority is deterministic and suitable for SERIAL Graph scheduling:
+    // DMA_LOAD > GEMM > Softmax > Reduce > Math > Gather > Slice > Concat
+    //          > AvgPool > MaxPool > Pad > Resize > Cast > EW/ReLU.
+    //
+    // If scheduler_mode enables overlap later, replace this priority chain with
+    // a true SRAM0 arbiter / BRAM port scheduler.
+    // -------------------------------------------------------------------------
+
+    
+always_comb begin
+  for (int i = 0; i < SRAM0_NUM_BANKS; i++) begin
+    sram0_a_en[i]   = 1'b0;
+    sram0_a_we[i]   = 1'b0;
+    sram0_a_addr[i] = '0;
+    sram0_a_din[i]  = 8'd0;
+  end
+
+  sram0_rd_src_d  = SRAM_RD_NONE;
+  sram0_rd_bank_d = 3'd0;
+
+  if (gemm_sram_rd_en) begin
+    sram0_a_en[sram0_bank(gemm_sram_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(gemm_sram_rd_addr)] = sram0_row(gemm_sram_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_GEMM;
+    sram0_rd_bank_d = sram0_bank(gemm_sram_rd_addr);
+  end else if (ew_rd_en) begin
+    sram0_a_en[sram0_bank(ew_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(ew_rd_addr)] = sram0_row(ew_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_EW;
+    sram0_rd_bank_d = sram0_bank(ew_rd_addr);
+  end else if (sm_rd_en) begin
+    sram0_a_en[sram0_bank(sm_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(sm_rd_addr)] = sram0_row(sm_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_SM;
+    sram0_rd_bank_d = sram0_bank(sm_rd_addr);
+  end else if (re_rd_en) begin
+    sram0_a_en[sram0_bank(re_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(re_rd_addr)] = sram0_row(re_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_RE;
+    sram0_rd_bank_d = sram0_bank(re_rd_addr);
+  end else if (me_rd_en) begin
+    sram0_a_en[sram0_bank(me_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(me_rd_addr)] = sram0_row(me_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_ME;
+    sram0_rd_bank_d = sram0_bank(me_rd_addr);
+  end else if (ga_rd_en) begin
+    sram0_a_en[sram0_bank(ga_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(ga_rd_addr)] = sram0_row(ga_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_GA;
+    sram0_rd_bank_d = sram0_bank(ga_rd_addr);
+  end else if (sl_rd_en) begin
+    sram0_a_en[sram0_bank(sl_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(sl_rd_addr)] = sram0_row(sl_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_SL;
+    sram0_rd_bank_d = sram0_bank(sl_rd_addr);
+  end else if (ct_rd_en) begin
+    sram0_a_en[sram0_bank(ct_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(ct_rd_addr)] = sram0_row(ct_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_CT;
+    sram0_rd_bank_d = sram0_bank(ct_rd_addr);
+  end else if (ap_rd_en) begin
+    sram0_a_en[sram0_bank(ap_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(ap_rd_addr)] = sram0_row(ap_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_AP;
+    sram0_rd_bank_d = sram0_bank(ap_rd_addr);
+  end else if (mp_rd_en) begin
+    sram0_a_en[sram0_bank(mp_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(mp_rd_addr)] = sram0_row(mp_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_MP;
+    sram0_rd_bank_d = sram0_bank(mp_rd_addr);
+  end else if (pd_rd_en) begin
+    sram0_a_en[sram0_bank(pd_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(pd_rd_addr)] = sram0_row(pd_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_PD;
+    sram0_rd_bank_d = sram0_bank(pd_rd_addr);
+  end else if (rz_rd_en) begin
+    sram0_a_en[sram0_bank(rz_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(rz_rd_addr)] = sram0_row(rz_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_RZ;
+    sram0_rd_bank_d = sram0_bank(rz_rd_addr);
+  end else if (ca_rd_en) begin
+    sram0_a_en[sram0_bank(ca_rd_addr)]   = 1'b1;
+    sram0_a_addr[sram0_bank(ca_rd_addr)] = sram0_row(ca_rd_addr);
+    sram0_rd_src_d  = SRAM_RD_CA;
+    sram0_rd_bank_d = sram0_bank(ca_rd_addr);
+  end
+end
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    sram0_rd_src_q  <= SRAM_RD_NONE;
+    sram0_rd_bank_q <= 3'd0;
+
+    gemm_sram_rd_data <= 8'd0;
+    ew_rd_data        <= 8'd0;
+    sm_rd_data        <= 8'd0;
+    re_rd_data        <= 8'd0;
+    me_rd_data        <= 8'd0;
+    ga_rd_data        <= 8'd0;
+    sl_rd_data        <= 8'd0;
+    ct_rd_data        <= 8'd0;
+    ap_rd_data        <= 8'd0;
+    mp_rd_data        <= 8'd0;
+    pd_rd_data        <= 8'd0;
+    rz_rd_data        <= 8'd0;
+    ca_rd_data        <= 8'd0;
+  end else begin
+    sram0_rd_src_q  <= sram0_rd_src_d;
+    sram0_rd_bank_q <= sram0_rd_bank_d;
+
+    unique case (sram0_rd_src_q)
+      SRAM_RD_GEMM: gemm_sram_rd_data <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_EW:   ew_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_SM:   sm_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_RE:   re_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_ME:   me_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_GA:   ga_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_SL:   sl_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_CT:   ct_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_AP:   ap_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_MP:   mp_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_PD:   pd_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_RZ:   rz_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      SRAM_RD_CA:   ca_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
+      default: ;
+    endcase
+  end
+end
+always_comb
+  for (int i = 0; i < SRAM0_NUM_BANKS; i++) begin
+    sram0_b_en[i]   = 1'b0;
+    sram0_b_we[i]   = 1'b0;
+    sram0_b_addr[i] = '0;
+    sram0_b_din[i]  = 8'd0;
+  end
+
+  // ------------------------------------------------------------
+  // DMA LOAD: 64-bit -> 8 banks, one byte per bank
+  // ------------------------------------------------------------
+  if (dma_sram_wr_en) begin
+    for (int k = 0; k < 8; k++) begin
+      logic [SRAM0_AW-1:0] byte_addr;
+      logic [2:0]          bank;
+
+      byte_addr = dma_sram_wr_addr + k[SRAM0_AW-1:0];
+      bank      = sram0_bank(byte_addr);
+
+      if (dma_sram_wr_mask[k]) begin
+        sram0_b_en[bank]   = 1'b1;
+        sram0_b_we[bank]   = 1'b1;
+        sram0_b_addr[bank] = sram0_row(byte_addr);
+        sram0_b_din[bank]  = dma_sram_wr_data[8*k +: 8];
+      end
+    end
+
+  // ------------------------------------------------------------
+  // Byte writes from engines
+  // ------------------------------------------------------------
+  end else if (gemm_sram_wr_en) begin
+    sram0_b_en[sram0_bank(gemm_sram_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(gemm_sram_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(gemm_sram_wr_addr)] = sram0_row(gemm_sram_wr_addr);
+    sram0_b_din[sram0_bank(gemm_sram_wr_addr)]  = gemm_sram_wr_data;
+
+  end else if (sm_wr_en) begin
+    sram0_b_en[sram0_bank(sm_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(sm_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(sm_wr_addr)] = sram0_row(sm_wr_addr);
+    sram0_b_din[sram0_bank(sm_wr_addr)]  = sm_wr_data;
+
+  end else if (re_wr_en) begin
+    sram0_b_en[sram0_bank(re_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(re_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(re_wr_addr)] = sram0_row(re_wr_addr);
+    sram0_b_din[sram0_bank(re_wr_addr)]  = re_wr_data;
+
+  end else if (me_wr_en) begin
+    sram0_b_en[sram0_bank(me_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(me_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(me_wr_addr)] = sram0_row(me_wr_addr);
+    sram0_b_din[sram0_bank(me_wr_addr)]  = me_wr_data;
+
+  end else if (ga_wr_en) begin
+    sram0_b_en[sram0_bank(ga_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(ga_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(ga_wr_addr)] = sram0_row(ga_wr_addr);
+    sram0_b_din[sram0_bank(ga_wr_addr)]  = ga_wr_data;
+
+  end else if (sl_wr_en) begin
+    sram0_b_en[sram0_bank(sl_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(sl_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(sl_wr_addr)] = sram0_row(sl_wr_addr);
+    sram0_b_din[sram0_bank(sl_wr_addr)]  = sl_wr_data;
+
+  end else if (ct_wr_en) begin
+    sram0_b_en[sram0_bank(ct_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(ct_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(ct_wr_addr)] = sram0_row(ct_wr_addr);
+    sram0_b_din[sram0_bank(ct_wr_addr)]  = ct_wr_data;
+
+  end else if (ap_wr_en) begin
+    sram0_b_en[sram0_bank(ap_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(ap_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(ap_wr_addr)] = sram0_row(ap_wr_addr);
+    sram0_b_din[sram0_bank(ap_wr_addr)]  = ap_wr_data;
+
+  end else if (mp_wr_en) begin
+    sram0_b_en[sram0_bank(mp_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(mp_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(mp_wr_addr)] = sram0_row(mp_wr_addr);
+    sram0_b_din[sram0_bank(mp_wr_addr)]  = mp_wr_data;
+
+  end else if (pd_wr_en) begin
+    sram0_b_en[sram0_bank(pd_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(pd_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(pd_wr_addr)] = sram0_row(pd_wr_addr);
+    sram0_b_din[sram0_bank(pd_wr_addr)]  = pd_wr_data;
+
+  end else if (rz_wr_en) begin
+    sram0_b_en[sram0_bank(rz_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(rz_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(rz_wr_addr)] = sram0_row(rz_wr_addr);
+    sram0_b_din[sram0_bank(rz_wr_addr)]  = rz_wr_data;
+
+  end else if (ca_wr_en) begin
+    sram0_b_en[sram0_bank(ca_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(ca_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(ca_wr_addr)] = sram0_row(ca_wr_addr);
+    sram0_b_din[sram0_bank(ca_wr_addr)]  = ca_wr_data;
+
+  end else if (ew_wr_en) begin
+    sram0_b_en[sram0_bank(ew_wr_addr)]   = 1'b1;
+    sram0_b_we[sram0_bank(ew_wr_addr)]   = 1'b1;
+    sram0_b_addr[sram0_bank(ew_wr_addr)] = sram0_row(ew_wr_addr);
+    sram0_b_din[sram0_bank(ew_wr_addr)]  = ew_wr_data;
+
+  // ------------------------------------------------------------
+  // DMA STORE: 8 banks -> 64-bit, synchronous read
+  // ------------------------------------------------------------
+  end else if (dma_sram_rd_en) begin
+    for (int k = 0; k < 8; k++) begin
+      logic [SRAM0_AW-1:0] byte_addr;
+      logic [2:0]          bank;
+
+      byte_addr = dma_sram_rd_addr + k[SRAM0_AW-1:0];
+      bank      = sram0_bank(byte_addr);
+
+      sram0_b_en[bank]   = 1'b1;
+      sram0_b_we[bank]   = 1'b0;
+      sram0_b_addr[bank] = sram0_row(byte_addr);
+    end
+  end
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dma_sram_rd_en_q   <= 1'b0;
+    dma_sram_rd_data   <= 64'd0;
+    for (int k = 0; k < 8; k++) begin
+      dma_rd_bank_q[k] <= 3'd0;
+    end
+  end else begin
+    dma_sram_rd_en_q <= dma_sram_rd_en;
+
+    if (dma_sram_rd_en) begin
+      for (int k = 0; k < 8; k++) begin
+        dma_rd_bank_q[k] <= sram0_bank(dma_sram_rd_addr + k[SRAM0_AW-1:0]);
+      end
+    end
+
+    if (dma_sram_rd_en_q) begin
+      for (int k = 0; k < 8; k++) begin
+        dma_sram_rd_data[8*k +: 8] <= sram0_b_dout[dma_rd_bank_q[k]];
+      end
+    end
+  end
+end
+
+genvar gb;
+generate
+  for (gb = 0; gb < SRAM0_NUM_BANKS; gb++) begin : gen_sram0_banks
+    sram_dp #(
+      .DEPTH  (SRAM0_BANK_DEPTH),
+      .WIDTH  (8),
+      .ADDR_W (SRAM0_BANK_AW)
+    ) u_sram0_bank (
+      .clk    (clk),
+
+      .en_a   (sram0_a_en[gb]),
+      .we_a   (sram0_a_we[gb]),
+      .addr_a (sram0_a_addr[gb]),
+      .din_a  (sram0_a_din[gb]),
+      .dout_a (sram0_a_dout[gb]),
+
+      .en_b   (sram0_b_en[gb]),
+      .we_b   (sram0_b_we[gb]),
+      .addr_b (sram0_b_addr[gb]),
+      .din_b  (sram0_b_din[gb]),
+      .dout_b (sram0_b_dout[gb])
     );
-
-
-
-
+  end
+endgenerate
 
 
 `ifdef SYNTHESIS
+`ifdef NPU_SIM_DEBUG
     // -------------------------------------------------------------------------
     // Debug prints
     // -------------------------------------------------------------------------
@@ -1163,6 +1416,7 @@ logic [1:0] dbg_dump_req;
             end
         end
     end
+    `endif
 `endif
 
 endmodule
