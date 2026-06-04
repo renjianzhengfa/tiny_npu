@@ -81,21 +81,11 @@ logic                         graph_prog_we;
 logic [GRAPH_PROG_AW-1:0]     graph_prog_waddr;
 logic [127:0]                 graph_prog_wdata;
 
-logic                         graph_prog_rd_en;
-logic [GRAPH_PROG_AW-1:0]     graph_prog_rd_addr;
-logic [127:0]                 graph_prog_rd_data;
-
-logic [127:0] graph_prog_mem [0:(1<<GRAPH_PROG_AW)-1];
-
-always_ff @(posedge clk) begin
-  if (graph_prog_we) begin
-    graph_prog_mem[graph_prog_waddr] <= graph_prog_wdata;
-  end
-
-  if (graph_prog_rd_en) begin
-    graph_prog_rd_data <= graph_prog_mem[graph_prog_rd_addr];
-  end
-end
+// // Graph program SRAM moved into graph_compute_core_stage0.
+//   if (graph_prog_rd_en) begin
+//     graph_prog_rd_data <= graph_prog_mem[graph_prog_rd_addr];
+//   end
+// end
 
 
 // axi_dma_wr.sv    logic
@@ -117,6 +107,7 @@ logic dma_smoke_pop;
 logic dma_wr_data_valid;
 logic dma_wr_data_ready;
 logic [P_AXI_DATA_W-1:0] dma_wr_data_in;
+logic dma_wr_data_last;
 
     // =========================================================================
     // Internal signals
@@ -170,9 +161,26 @@ logic [P_AXI_DATA_W-1:0] dma_wr_data_in;
     logic [15:0] graph_dma_count;
     logic [15:0] graph_dma_block_len;
     logic        graph_dma_done;
+
     logic        graph_dma_direction_q;
     logic        graph_dma_cmd_seen;
-    wire         graph_dma_cmd_fire = graph_dma_cmd_valid && !graph_dma_cmd_seen;
+
+    // Graph DMA command handshake signals.
+    // Only declarations are placed here. Continuous assignments are placed later,
+    // after dma_rd_int_cmd_ready / dma_wr_int_cmd_ready have been declared.
+    logic        graph_dma_cmd_pending;
+    logic        graph_dma_artifact_accept;
+    logic        graph_dma_rd_req;
+    logic        graph_dma_wr_req;
+    logic        graph_dma_rd_accept;
+    logic        graph_dma_wr_accept;
+    logic        graph_dma_cmd_accept;
+    logic        graph_dma_cmd_fire;
+
+    // Simulation-only fast artifact mode enable.
+    // TB can enable it by hierarchical assignment.
+    logic        artifact_fast_en;
+    initial artifact_fast_en = 1'b0;
 
     logic         tdesc_we;
     logic [7:0]   tdesc_waddr;
@@ -192,6 +200,457 @@ logic [31:0] graph_dma_abs_addr;
 always_comb begin
     graph_dma_abs_addr = reg_ddr_base_act + graph_dma_ddr_addr;
 end
+
+
+    // -------------------------------------------------------------------------
+    // DMA engine stream/control declarations
+    // Keep these BEFORE graph real-DDR bridge logic. This file uses
+    // `default_nettype none`, so the bridge cannot reference these before
+    // declaration.
+    // -------------------------------------------------------------------------
+    logic        dma_rd_int_cmd_valid, dma_rd_int_cmd_ready;
+    logic [31:0] dma_rd_int_cmd_addr;
+    logic [23:0] dma_rd_int_cmd_len;
+    logic [3:0]  dma_rd_int_cmd_tag;
+    logic        dma_rd_data_valid, dma_rd_data_ready;
+    logic [P_AXI_DATA_W-1:0] dma_rd_data;
+    logic        dma_rd_data_last;
+    logic        dma_rd_done, dma_rd_busy;
+
+    logic        dma_wr_int_cmd_valid, dma_wr_int_cmd_ready;
+    logic [31:0] dma_wr_int_cmd_addr;
+    logic [23:0] dma_wr_int_cmd_len;
+    logic [3:0]  dma_wr_int_cmd_tag;
+    logic        dma_wr_done, dma_wr_busy;
+
+    // =========================================================================
+    // Graph artifact fast-simulation support
+    // -------------------------------------------------------------------------
+    // This is a simulation acceleration path for ONNX/Graph artifacts.
+    // It bypasses Cheshire DRAM/DRAMSys for graph DMA only:
+    //   - TB backdoor-loads ddr_64.hex into artifact_ddr_mem[].
+    //   - Graph DMA_LOAD copies artifact_ddr_mem -> graph_sram.
+    //   - Graph DMA_STORE copies graph_sram -> artifact_ddr_mem.
+    //
+    // Keep artifact_fast_en=0 for normal UART/AXI Graph DMA smoke.
+    // TB can enable it by hierarchical assignment:
+    //   i_fix.i_npu_wrap.i_tiny_npu.artifact_fast_en = 1'b1;
+    // =========================================================================
+    localparam int GRAPH_SRAM_BYTES      = 65536;
+
+`ifdef NPU_KEEP_ARTIFACT_DDR
+    // Optional legacy artifact-fast virtual DDR.
+    // Keep this only when you explicitly want the old fast artifact path.
+    localparam int ARTIFACT_DDR_WORDS    = 1048576; // 8 MiB / 8B
+    localparam int ARTIFACT_DDR_WORD_AW  = 20;
+`else
+    // Real-DRAMSys flow is now the default.  Keep a 1-word dummy so old
+    // artifact-fast code still compiles, but it is effectively disabled.
+    localparam int ARTIFACT_DDR_WORDS    = 1;
+    localparam int ARTIFACT_DDR_WORD_AW  = 1;
+`endif
+
+    // artifact_fast_en is declared in the top graph declaration area.
+    // SRAM0/graph_sram has moved into u_graph_core.
+    // In the real-DRAMSys flow, do not preload this memory.  It is a tiny dummy
+    // by default.  Define NPU_KEEP_ARTIFACT_DDR to restore the old 8 MiB
+    // artifact-fast virtual DDR for legacy tests.
+    logic [63:0] artifact_ddr_mem [0:ARTIFACT_DDR_WORDS-1];
+
+    logic        artifact_dma_done_pulse;
+
+    // 64-bit/cycle access port into u_graph_core's owned SRAM0.
+    logic        graph_sram_dma_wr_en;
+    logic [15:0] graph_sram_dma_wr_addr;
+    logic [63:0] graph_sram_dma_wr_data;
+    logic [7:0]  graph_sram_dma_wr_mask;
+    logic        graph_sram_dma_rd_en;
+    logic [15:0] graph_sram_dma_rd_addr;
+    logic [63:0] graph_sram_dma_rd_data;
+
+    // artifact_fast DMA streaming state.
+    logic        artifact_dma_busy;
+    logic        artifact_dma_dir_q;
+    logic [31:0] artifact_dma_ddr_addr_q;
+    logic [15:0] artifact_dma_sram_addr_q;
+    logic [15:0] artifact_dma_len_q;
+    logic [15:0] artifact_dma_pos_q;
+
+    // Real external DDR DMA state.
+    // When artifact_fast_en=0, axi_dma_rd/axi_dma_wr are the real DDR path.
+    // These state registers bridge AXI streaming data and u_graph_core's owned SRAM0.
+    logic        real_dma_load_active;
+    logic [15:0] real_dma_load_sram_addr_q;
+    logic [15:0] real_dma_load_len_q;
+    logic [15:0] real_dma_load_pos_q;
+
+    logic        real_dma_store_active;
+    logic [15:0] real_dma_store_sram_addr_q;
+    logic [15:0] real_dma_store_len_q;
+    logic [15:0] real_dma_store_pos_q;
+
+
+    // EW/ReLU SRAM port from graph_top.
+    logic        ew_rd_en;
+    logic [15:0] ew_rd_addr;
+    logic [7:0]  ew_rd_data;
+    logic        ew_wr_en;
+    logic [15:0] ew_wr_addr;
+    logic [7:0]  ew_wr_data;
+    logic        ew_busy;
+
+    // Debug counter: only print the first EW/ReLU writes to avoid log flood.
+    logic [31:0] ew_dbg_wr_count;
+
+    // NOTE:
+    // ew_busy is an output from graph_top in this repository version, so do not
+    // drive it here.
+    //
+    // graph_sram has exactly ONE procedural write owner below:
+    //   p_artifact_fast_dma
+    // That block handles both:
+    //   1) artifact_fast DMA LOAD into graph_sram
+    //   2) EW/ReLU writeback into graph_sram
+    // This avoids VCS multiple procedural drivers on the same memory.
+    // EW/ReLU SRAM0 byte port is now internal to u_graph_core.
+
+    // Graph GEMM/Pool command stubs for schedule-level artifact demo.
+    // These let graph_top advance through compiled Graph programs, but they do
+    // NOT produce numerically correct Conv/GEMM/Pool output. Golden alignment
+    // requires replacing these stubs with real engines.
+    logic        graph_gm_cmd_valid;
+    logic [15:0] graph_gm_cmd_src0, graph_gm_cmd_src1, graph_gm_cmd_dst;
+    logic [15:0] graph_gm_cmd_M, graph_gm_cmd_N, graph_gm_cmd_K;
+    logic [7:0]  graph_gm_cmd_flags;
+    logic [31:0] graph_gm_cmd_imm;
+    logic [7:0]  graph_gm_cmd_dtype;
+    logic        graph_gm_done;
+
+    logic        graph_ap_cmd_valid, graph_ap_done;
+    logic        graph_mp_cmd_valid, graph_mp_done;
+    logic [15:0] graph_ap_cmd_src_base, graph_ap_cmd_dst_base;
+    logic [15:0] graph_mp_cmd_src_base, graph_mp_cmd_dst_base;
+    logic [15:0] graph_ap_cmd_C, graph_ap_cmd_H, graph_ap_cmd_W;
+    logic [15:0] graph_mp_cmd_C, graph_mp_cmd_H, graph_mp_cmd_W;
+    logic [7:0]  graph_ap_cmd_kh, graph_ap_cmd_kw, graph_ap_cmd_sh, graph_ap_cmd_sw;
+    logic [7:0]  graph_mp_cmd_kh, graph_mp_cmd_kw, graph_mp_cmd_sh, graph_mp_cmd_sw;
+
+    // one-shot done pulses for schedule-level demo
+    logic [7:0] graph_gm_timer, graph_ap_timer, graph_mp_timer;
+    logic       graph_gm_busy,  graph_ap_busy,  graph_mp_busy;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            graph_gm_done  <= 1'b0;
+            graph_ap_done  <= 1'b0;
+            graph_mp_done  <= 1'b0;
+            graph_gm_busy  <= 1'b0;
+            graph_ap_busy  <= 1'b0;
+            graph_mp_busy  <= 1'b0;
+            graph_gm_timer <= '0;
+            graph_ap_timer <= '0;
+            graph_mp_timer <= '0;
+        end else begin
+            graph_gm_done <= 1'b0;
+            graph_ap_done <= 1'b0;
+            graph_mp_done <= 1'b0;
+
+            if (graph_gm_cmd_valid && !graph_gm_busy) begin
+                graph_gm_busy  <= 1'b1;
+                graph_gm_timer <= 8'd8;
+                $display("[%0t] GRAPH_FAST GEMM_STUB src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d",
+                         $time, graph_gm_cmd_src0, graph_gm_cmd_src1, graph_gm_cmd_dst,
+                         graph_gm_cmd_M, graph_gm_cmd_N, graph_gm_cmd_K);
+            end else if (graph_gm_busy) begin
+                if (graph_gm_timer == 0) begin
+                    graph_gm_busy <= 1'b0;
+                    graph_gm_done <= 1'b1;
+                end else begin
+                    graph_gm_timer <= graph_gm_timer - 1'b1;
+                end
+            end
+
+            if (graph_ap_cmd_valid && !graph_ap_busy) begin
+                graph_ap_busy  <= 1'b1;
+                graph_ap_timer <= 8'd8;
+                $display("[%0t] GRAPH_FAST AVGPOOL_STUB src=0x%04x dst=0x%04x",
+                         $time, graph_ap_cmd_src_base, graph_ap_cmd_dst_base);
+            end else if (graph_ap_busy) begin
+                if (graph_ap_timer == 0) begin
+                    graph_ap_busy <= 1'b0;
+                    graph_ap_done <= 1'b1;
+                end else begin
+                    graph_ap_timer <= graph_ap_timer - 1'b1;
+                end
+            end
+
+            if (graph_mp_cmd_valid && !graph_mp_busy) begin
+                graph_mp_busy  <= 1'b1;
+                graph_mp_timer <= 8'd8;
+                $display("[%0t] GRAPH_FAST MAXPOOL_STUB src=0x%04x dst=0x%04x",
+                         $time, graph_mp_cmd_src_base, graph_mp_cmd_dst_base);
+            end else if (graph_mp_busy) begin
+                if (graph_mp_timer == 0) begin
+                    graph_mp_busy <= 1'b0;
+                    graph_mp_done <= 1'b1;
+                end else begin
+                    graph_mp_timer <= graph_mp_timer - 1'b1;
+                end
+            end
+        end
+    end
+
+
+    
+    // Fast graph DMA copy.
+    // This version streams up to 8 bytes/cycle between top-level artifact_ddr_mem
+    // and the SRAM0 owned by u_graph_core.
+    //
+    // It replaces the old zero-time for-loop copy into top-level graph_sram.
+    // SRAM0 is now inside graph_compute, so this adapter talks to the compute
+    // core through graph_sram_dma_* ports.
+    // Unified SRAM0 DMA adapter into u_graph_core.
+    // - artifact_fast_en=1 : artifact_ddr_mem <-> compute SRAM0.
+    // - artifact_fast_en=0 : AXI DMA R/W streams <-> compute SRAM0.
+    //
+    // This is the key bridge after moving SRAM0 inside graph_compute:
+    // real DDR data arrives in tiny_npu_top via axi_dma_rd, then this block
+    // drives graph_sram_dma_wr_* so u_graph_core can write its internal SRAM0.
+    // STORE reads u_graph_core SRAM0 through graph_sram_dma_rd_* and feeds
+    // axi_dma_wr through dma_wr_data_in.
+    always_comb begin : p_graph_sram_dma_comb
+        integer lane;
+        integer ddr_byte_addr;
+        integer ddr_word_idx;
+        integer ddr_lane;
+
+        graph_sram_dma_wr_en   = 1'b0;
+        graph_sram_dma_wr_addr = 16'd0;
+        graph_sram_dma_wr_data = 64'd0;
+        graph_sram_dma_wr_mask = 8'd0;
+
+        graph_sram_dma_rd_en   = 1'b0;
+        graph_sram_dma_rd_addr = 16'd0;
+
+        // -------------------------------------------------------------
+        // Fast artifact LOAD: artifact_ddr_mem -> compute SRAM0
+        // -------------------------------------------------------------
+        if (artifact_dma_busy && !artifact_dma_dir_q) begin
+            graph_sram_dma_wr_en   = 1'b1;
+            graph_sram_dma_wr_addr = artifact_dma_sram_addr_q + artifact_dma_pos_q;
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                if ((artifact_dma_pos_q + lane[15:0]) < artifact_dma_len_q) begin
+                    ddr_byte_addr = artifact_dma_ddr_addr_q + artifact_dma_pos_q + lane;
+                    ddr_word_idx  = ddr_byte_addr >> 3;
+                    ddr_lane      = ddr_byte_addr & 7;
+                    if (ddr_word_idx < ARTIFACT_DDR_WORDS) begin
+                        graph_sram_dma_wr_data[8*lane +: 8] =
+                            artifact_ddr_mem[ddr_word_idx][8*ddr_lane +: 8];
+                        graph_sram_dma_wr_mask[lane] = 1'b1;
+                    end
+                end
+            end
+        end
+
+        // -------------------------------------------------------------
+        // Fast artifact STORE: compute SRAM0 -> artifact_ddr_mem
+        // -------------------------------------------------------------
+        if (artifact_dma_busy && artifact_dma_dir_q) begin
+            graph_sram_dma_rd_en   = 1'b1;
+            graph_sram_dma_rd_addr = artifact_dma_sram_addr_q + artifact_dma_pos_q;
+        end
+
+        // -------------------------------------------------------------
+        // Real DDR LOAD: axi_dma_rd data_out -> compute SRAM0
+        // The current AXI monitor shows size=3, so this bridge consumes one
+        // 64-bit lower-lane beat at a time. Upper bits are ignored for now.
+        // -------------------------------------------------------------
+        if (!artifact_fast_en && graph_mode && real_dma_load_active &&
+            dma_rd_data_valid && dma_rd_data_ready) begin
+            graph_sram_dma_wr_en   = 1'b1;
+            graph_sram_dma_wr_addr = real_dma_load_sram_addr_q + real_dma_load_pos_q;
+            graph_sram_dma_wr_data = dma_rd_data[63:0];
+            graph_sram_dma_wr_mask = 8'd0;
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                if ((real_dma_load_pos_q + lane[15:0]) < real_dma_load_len_q) begin
+                    graph_sram_dma_wr_mask[lane] = 1'b1;
+                end
+            end
+        end
+
+        // -------------------------------------------------------------
+        // Real DDR STORE: compute SRAM0 -> axi_dma_wr data_in
+        // -------------------------------------------------------------
+        if (!artifact_fast_en && graph_mode && real_dma_store_active) begin
+            graph_sram_dma_rd_en   = 1'b1;
+            graph_sram_dma_rd_addr = real_dma_store_sram_addr_q + real_dma_store_pos_q;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin : p_artifact_fast_dma
+        integer lane;
+        integer ddr_byte_addr;
+        integer ddr_word_idx;
+        integer ddr_lane;
+
+        if (!rst_n) begin
+            artifact_dma_done_pulse <= 1'b0;
+            artifact_dma_busy       <= 1'b0;
+            artifact_dma_dir_q      <= 1'b0;
+            artifact_dma_ddr_addr_q <= 32'd0;
+            artifact_dma_sram_addr_q<= 16'd0;
+            artifact_dma_len_q      <= 16'd0;
+            artifact_dma_pos_q      <= 16'd0;
+        end else begin
+            artifact_dma_done_pulse <= 1'b0;
+
+            if (!artifact_dma_busy) begin
+                if (artifact_fast_en && graph_mode && graph_dma_cmd_fire) begin
+                    $display("[%0t] GRAPH_FAST_DMA_START %s ddr_off=0x%08x sram=0x%04x len=%0d",
+                             $time,
+                             graph_dma_direction ? "STORE" : "LOAD ",
+                             graph_dma_ddr_addr,
+                             graph_dma_sram_addr,
+                             graph_dma_length);
+
+                    artifact_dma_busy        <= (graph_dma_length != 16'd0);
+                    artifact_dma_dir_q       <= graph_dma_direction;
+                    artifact_dma_ddr_addr_q  <= graph_dma_ddr_addr;
+                    artifact_dma_sram_addr_q <= graph_dma_sram_addr;
+                    artifact_dma_len_q       <= graph_dma_length;
+                    artifact_dma_pos_q       <= 16'd0;
+
+                    if (graph_dma_length == 16'd0) begin
+                        artifact_dma_done_pulse <= 1'b1;
+                    end
+                end
+            end else begin
+                // STORE path: copy current 8-byte SRAM beat into artifact DDR.
+                if (artifact_dma_dir_q) begin
+                    for (lane = 0; lane < 8; lane = lane + 1) begin
+                        if ((artifact_dma_pos_q + lane[15:0]) < artifact_dma_len_q) begin
+                            ddr_byte_addr = artifact_dma_ddr_addr_q + artifact_dma_pos_q + lane;
+                            ddr_word_idx  = ddr_byte_addr >> 3;
+                            ddr_lane      = ddr_byte_addr & 7;
+                            if (ddr_word_idx < ARTIFACT_DDR_WORDS) begin
+                                artifact_ddr_mem[ddr_word_idx][8*ddr_lane +: 8] <=
+                                    graph_sram_dma_rd_data[8*lane +: 8];
+                            end else begin
+                                $error("[%0t] GRAPH_FAST_DMA STORE address out of range: byte=0x%08x word=%0d",
+                                       $time, ddr_byte_addr, ddr_word_idx);
+                            end
+                        end
+                    end
+                end
+
+                if (artifact_dma_pos_q + 16'd8 >= artifact_dma_len_q) begin
+                    artifact_dma_busy       <= 1'b0;
+                    artifact_dma_done_pulse <= 1'b1;
+                    $display("[%0t] GRAPH_FAST_DMA_DONE %s ddr_off=0x%08x sram=0x%04x len=%0d",
+                             $time,
+                             artifact_dma_dir_q ? "STORE" : "LOAD ",
+                             artifact_dma_ddr_addr_q,
+                             artifact_dma_sram_addr_q,
+                             artifact_dma_len_q);
+                end else begin
+                    artifact_dma_pos_q <= artifact_dma_pos_q + 16'd8;
+                end
+            end
+        end
+    end
+
+
+
+    // Real external-DDR Graph DMA stream control.
+    // This block replaces the old dma_smoke_buf path for graph_mode.
+    // It does not create AXI transactions; axi_dma_rd/axi_dma_wr still do that.
+    // It only tracks where each returned/read-out beat belongs in compute SRAM0.
+    always_ff @(posedge clk or negedge rst_n) begin : p_real_graph_dma_stream
+        if (!rst_n) begin
+            real_dma_load_active       <= 1'b0;
+            real_dma_load_sram_addr_q  <= 16'd0;
+            real_dma_load_len_q        <= 16'd0;
+            real_dma_load_pos_q        <= 16'd0;
+
+            real_dma_store_active      <= 1'b0;
+            real_dma_store_sram_addr_q <= 16'd0;
+            real_dma_store_len_q       <= 16'd0;
+            real_dma_store_pos_q       <= 16'd0;
+        end else begin
+            // Start a real DDR LOAD after the graph DMA read command is accepted.
+            if (graph_dma_rd_accept) begin
+                real_dma_load_active      <= (graph_dma_length != 16'd0);
+                real_dma_load_sram_addr_q <= graph_dma_sram_addr;
+                real_dma_load_len_q       <= graph_dma_length;
+                real_dma_load_pos_q       <= 16'd0;
+                $display("[%0t] REAL_DMA_LOAD_START sram=0x%04x len=%0d",
+                         $time, graph_dma_sram_addr, graph_dma_length);
+            end else if (real_dma_load_active && dma_rd_data_valid && dma_rd_data_ready) begin
+                if (real_dma_load_pos_q + 16'd8 >= real_dma_load_len_q) begin
+                    real_dma_load_pos_q <= real_dma_load_len_q;
+                end else begin
+                    real_dma_load_pos_q <= real_dma_load_pos_q + 16'd8;
+                end
+
+                if (real_dma_load_pos_q < 16'd64) begin
+                    $display("[%0t] REAL_DMA_LOAD_WR sram=0x%04x data=0x%016x pos=%0d last=%0d",
+                             $time,
+                             real_dma_load_sram_addr_q + real_dma_load_pos_q,
+                             dma_rd_data[63:0],
+                             real_dma_load_pos_q,
+                             dma_rd_data_last);
+                end
+            end
+
+            if (dma_rd_done) begin
+                if (real_dma_load_active) begin
+                    $display("[%0t] REAL_DMA_LOAD_DONE sram=0x%04x len=%0d pos=%0d",
+                             $time,
+                             real_dma_load_sram_addr_q,
+                             real_dma_load_len_q,
+                             real_dma_load_pos_q);
+                end
+                real_dma_load_active <= 1'b0;
+            end
+
+            // Start a real DDR STORE after the graph DMA write command is accepted.
+            if (graph_dma_wr_accept) begin
+                real_dma_store_active      <= (graph_dma_length != 16'd0);
+                real_dma_store_sram_addr_q <= graph_dma_sram_addr;
+                real_dma_store_len_q       <= graph_dma_length;
+                real_dma_store_pos_q       <= 16'd0;
+                $display("[%0t] REAL_DMA_STORE_START sram=0x%04x len=%0d",
+                         $time, graph_dma_sram_addr, graph_dma_length);
+            end else if (real_dma_store_active && dma_wr_data_valid && dma_wr_data_ready) begin
+                if (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q) begin
+                    real_dma_store_pos_q  <= real_dma_store_len_q;
+                    real_dma_store_active <= 1'b0;
+                end else begin
+                    real_dma_store_pos_q <= real_dma_store_pos_q + 16'd8;
+                end
+
+                if (real_dma_store_pos_q < 16'd64) begin
+                    $display("[%0t] REAL_DMA_STORE_RD sram=0x%04x data=0x%016x pos=%0d last=%0d",
+                             $time,
+                             real_dma_store_sram_addr_q + real_dma_store_pos_q,
+                             graph_sram_dma_rd_data,
+                             real_dma_store_pos_q,
+                             dma_wr_data_last);
+                end
+            end
+
+            if (dma_wr_done) begin
+                if (real_dma_store_active) begin
+                    $display("[%0t] REAL_DMA_STORE_DONE sram=0x%04x len=%0d pos=%0d",
+                             $time,
+                             real_dma_store_sram_addr_q,
+                             real_dma_store_len_q,
+                             real_dma_store_pos_q);
+                end
+                real_dma_store_active <= 1'b0;
+            end
+        end
+    end
 
     wire rst_int_n;
     assign rst_int_n = rst_n & ~soft_reset;
@@ -234,22 +693,34 @@ end
 
     // Engine status
     logic gemm_done, softmax_done, layernorm_done, gelu_done, vec_done;
-    logic dma_rd_done, dma_wr_done;
-    logic dma_rd_busy, dma_wr_busy;
 
-    // DMA command
-    logic        dma_rd_int_cmd_valid, dma_rd_int_cmd_ready;
-    logic [31:0] dma_rd_int_cmd_addr;
-    logic [23:0] dma_rd_int_cmd_len;
-    logic [3:0]  dma_rd_int_cmd_tag;
-    logic        dma_rd_data_valid, dma_rd_data_ready;
-    logic [P_AXI_DATA_W-1:0] dma_rd_data;
-    logic        dma_rd_data_last;
+    // -------------------------------------------------------------------------
+    // Graph DMA command accept handshake
+    // -------------------------------------------------------------------------
+    assign graph_dma_cmd_pending =
+        graph_mode && graph_dma_cmd_valid && !graph_dma_cmd_seen;
 
-    logic        dma_wr_int_cmd_valid, dma_wr_int_cmd_ready;
-    logic [31:0] dma_wr_int_cmd_addr;
-    logic [23:0] dma_wr_int_cmd_len;
-    logic [3:0]  dma_wr_int_cmd_tag;
+    assign graph_dma_artifact_accept =
+        artifact_fast_en && graph_dma_cmd_pending;
+
+    assign graph_dma_rd_req =
+        !artifact_fast_en && graph_dma_cmd_pending && !graph_dma_direction;
+
+    assign graph_dma_wr_req =
+        !artifact_fast_en && graph_dma_cmd_pending && graph_dma_direction;
+
+    assign graph_dma_rd_accept =
+        graph_dma_rd_req && dma_rd_int_cmd_ready;
+
+    assign graph_dma_wr_accept =
+        graph_dma_wr_req && dma_wr_int_cmd_ready;
+
+    assign graph_dma_cmd_accept =
+        graph_dma_artifact_accept || graph_dma_rd_accept || graph_dma_wr_accept;
+
+    // Only artifact-fast copy block uses this old name.
+    assign graph_dma_cmd_fire =
+        graph_dma_artifact_accept;
 
     // Decoded fields from decoder
     logic [15:0] dec_gemm_src0, dec_gemm_src1, dec_gemm_dst;
@@ -443,7 +914,7 @@ assign npu_error = 1'b0;
         .data_valid     (dma_wr_data_valid),
         .data_ready     (dma_wr_data_ready),
         .data_in        (dma_wr_data_in),
-        .data_last      (1'b0),
+        .data_last      (dma_wr_data_last),
 
         .busy           (dma_wr_busy),
         .done           (dma_wr_done),
@@ -631,6 +1102,8 @@ assign npu_error = 1'b0;
         .done     ()
     );
 
+
+
     // =========================================================================
     // DMA Command Translation (decode/graph -> DMA engine)
     // =========================================================================
@@ -641,7 +1114,7 @@ always_comb begin
     dma_rd_int_cmd_tag   = 4'd0;
 
     if (graph_mode) begin
-        if (graph_dma_cmd_fire  && !graph_dma_direction) begin
+        if (graph_dma_rd_req) begin
             dma_rd_int_cmd_valid = 1'b1;
             dma_rd_int_cmd_addr  = graph_dma_abs_addr;
             dma_rd_int_cmd_len   = {8'd0, graph_dma_length};
@@ -670,7 +1143,7 @@ always_comb begin
     dma_wr_int_cmd_tag   = 4'd0;
 
     if (graph_mode) begin
-        if (graph_dma_cmd_fire && graph_dma_direction) begin
+        if (graph_dma_wr_req) begin
             dma_wr_int_cmd_valid = 1'b1;
             dma_wr_int_cmd_addr  = graph_dma_abs_addr;
             dma_wr_int_cmd_len   = {8'd0, graph_dma_length};
@@ -829,10 +1302,21 @@ end
     end
 `endif
 
-assign dma_smoke_push = dma_rd_data_valid && dma_rd_data_ready;
-assign dma_smoke_pop  = dma_wr_data_valid && dma_wr_data_ready;
+// -------------------------------------------------------------------------
+// Legacy DMA smoke buffer and real Graph DMA stream selection.
+//
+// In legacy/non-graph mode, keep the old smoke behavior:
+//   axi_dma_rd -> dma_smoke_buf -> axi_dma_wr.
+//
+// In graph mode with artifact_fast_en=0, bypass dma_smoke_buf completely:
+//   axi_dma_rd.data_out -> u_graph_core.SRAM0 through graph_sram_dma_wr_*
+//   u_graph_core.SRAM0 -> axi_dma_wr.data_in through graph_sram_dma_rd_*
+// -------------------------------------------------------------------------
+assign dma_smoke_push = (!graph_mode) && dma_rd_data_valid && dma_rd_data_ready;
+assign dma_smoke_pop  = (!graph_mode) && dma_wr_data_valid && dma_wr_data_ready;
 
-assign dma_rd_data_ready = (dma_smoke_count < DMA_SMOKE_BUF_DEPTH);
+assign dma_rd_data_ready = graph_mode ? real_dma_load_active
+                                      : (dma_smoke_count < DMA_SMOKE_BUF_DEPTH);
 
 always_ff @(posedge clk or negedge rst_int_n) begin
     if (!rst_int_n) begin
@@ -861,22 +1345,27 @@ end
 //// GRAPH
 ////
 
-assign dma_wr_data_valid = (dma_smoke_count != 0);
-assign dma_wr_data_in    = dma_smoke_buf[dma_smoke_rd_ptr];
+assign dma_wr_data_valid = graph_mode ? real_dma_store_active
+                                      : (dma_smoke_count != 0);
+assign dma_wr_data_in    = graph_mode ? {{(P_AXI_DATA_W-64){1'b0}}, graph_sram_dma_rd_data}
+                                      : dma_smoke_buf[dma_smoke_rd_ptr];
+assign dma_wr_data_last  = graph_mode ? (real_dma_store_active &&
+                                         (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q))
+                                      : 1'b0;
 
 // Graph declarations are placed near the top of this module.
 // Only sequential/control logic and instances remain below.
 
 always_ff @(posedge clk or negedge rst_int_n) begin
-  if (!rst_int_n) begin
-    graph_dma_direction_q <= 1'b0;
-  end else if (graph_mode && graph_dma_cmd_valid) begin
-    graph_dma_direction_q <= graph_dma_direction;
-  end
+    if (!rst_int_n) begin
+        graph_dma_direction_q <= 1'b0;
+    end else if (graph_dma_cmd_accept) begin
+        graph_dma_direction_q <= graph_dma_direction;
+    end
 end
-
 assign graph_dma_done =
-    graph_dma_direction_q ? dma_wr_done : dma_rd_done;
+    artifact_fast_en ? artifact_dma_done_pulse :
+    (graph_dma_direction_q ? dma_wr_done : dma_rd_done);
 
 
 always_ff @(posedge clk or negedge rst_int_n) begin
@@ -884,166 +1373,109 @@ always_ff @(posedge clk or negedge rst_int_n) begin
         graph_dma_cmd_seen <= 1'b0;
     end else if (!graph_mode || graph_dma_done) begin
         graph_dma_cmd_seen <= 1'b0;
-    end else if (graph_dma_cmd_valid) begin
+    end else if (graph_dma_cmd_accept) begin
         graph_dma_cmd_seen <= 1'b1;
     end
 end
 
-tensor_table #(
-  .NUM_ENTRIES (256),
-  .ENTRY_BITS  (256)
-) u_tensor_table (
-  .clk      (clk),
-  .rst_n    (rst_int_n),
 
-  .wr_en    (tdesc_we),
-  .wr_addr  (tdesc_waddr),
-  .wr_data  (tdesc_wdata),
+`ifndef SYNTHESIS
+// -------------------------------------------------------------------------
+// Quiet DMA debug
+// -------------------------------------------------------------------------
+// Important: do NOT print every AXI R/W beat here. Block1 has tens of thousands
+// of DMA beats, and per-beat printing hides the useful early log. Keep only
+// graph-level DMA commands and non-OKAY AXI responses.
+always @(posedge clk) begin
+    if (rst_int_n && graph_dma_rd_accept) begin
+        $display("[%0t] NPU_GRAPH_DMA_RD_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
+                 $time,
+                 graph_dma_ddr_addr,
+                 reg_ddr_base_act,
+                 graph_dma_abs_addr,
+                 graph_dma_length);
+    end
 
-  .rd0_addr (td_rd0_addr),
-  .rd0_data (td_rd0_data),
-  .rd1_addr (td_rd1_addr),
-  .rd1_data (td_rd1_data),
-  .rd2_addr (td_rd2_addr),
-  .rd2_data (td_rd2_data)
+    if (rst_int_n && graph_dma_wr_accept) begin
+        $display("[%0t] NPU_GRAPH_DMA_WR_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
+                 $time,
+                 graph_dma_ddr_addr,
+                 reg_ddr_base_act,
+                 graph_dma_abs_addr,
+                 graph_dma_length);
+    end
+
+    if (rst_int_n && m_axi_rvalid && m_axi_rready && (m_axi_rresp != 2'b00)) begin
+        $display("[%0t] NPU_AXI_R_ERROR data=0x%032x resp=0x%0x last=%0d",
+                 $time, m_axi_rdata, m_axi_rresp, m_axi_rlast);
+    end
+
+    if (rst_int_n && m_axi_bvalid && m_axi_bready && (m_axi_bresp != 2'b00)) begin
+        $display("[%0t] NPU_AXI_B_ERROR resp=0x%0x", $time, m_axi_bresp);
+    end
+end
+`endif
+
+// =========================================================================
+// Graph Compute Core Stage0 (owned SRAM0 inside compute)
+// -------------------------------------------------------------------------
+// This replaces the old in-top tensor_table + graph_top instance.
+// The outer tiny_npu_top still owns:
+//   - AXI-Lite register bank
+//   - Graph program / descriptor write ports
+//   - AXI DMA translation
+//   - dma_smoke_buf smoke path
+//   - artifact_fast_en simulation path; artifact_ddr_mem remains here
+//
+// Stage0 core owns SRAM0, handles EW/ReLU internally, and has GEMM-lite writeback.
+// It is for integration bring-up, not final Conv/GEMM golden correctness.
+// =========================================================================
+graph_compute_core_stage0 #(
+    .PROG_SRAM_AW (GRAPH_PROG_AW),
+    .SRAM0_AW     (16),
+    .TDESC_AW     (8)
+) u_graph_core (
+    .clk             (clk),
+    .rst_n           (rst_int_n),
+
+    .start           (graph_start),
+    .prog_len        (reg_ucode_len[15:0]),
+    .scheduler_mode  (1'b0),
+
+    .graph_prog_we    (graph_prog_we),
+    .graph_prog_waddr (graph_prog_waddr),
+    .graph_prog_wdata (graph_prog_wdata),
+
+    .tdesc_we       (tdesc_we),
+    .tdesc_waddr    (tdesc_waddr),
+    .tdesc_wdata    (tdesc_wdata),
+
+    .dma_cmd_valid  (graph_dma_cmd_valid),
+    .dma_ddr_addr   (graph_dma_ddr_addr),
+    .dma_sram_addr  (graph_dma_sram_addr),
+    .dma_length     (graph_dma_length),
+    .dma_direction  (graph_dma_direction),
+    .dma_strided    (graph_dma_strided),
+    .dma_stride     (graph_dma_stride),
+    .dma_count      (graph_dma_count),
+    .dma_block_len  (graph_dma_block_len),
+    .dma_done       (graph_dma_done),
+
+    .dma_sram_wr_en   (graph_sram_dma_wr_en),
+    .dma_sram_wr_addr (graph_sram_dma_wr_addr),
+    .dma_sram_wr_data (graph_sram_dma_wr_data),
+    .dma_sram_wr_mask (graph_sram_dma_wr_mask),
+    .dma_sram_rd_en   (graph_sram_dma_rd_en),
+    .dma_sram_rd_addr (graph_sram_dma_rd_addr),
+    .dma_sram_rd_data (graph_sram_dma_rd_data),
+
+    .graph_done     (graph_done),
+    .graph_busy     (graph_busy),
+    .graph_status   (graph_status),
+    .graph_pc       (graph_pc),
+    .graph_last_op  (graph_last_op)
 );
-graph_top #(
-  .PROG_SRAM_AW (GRAPH_PROG_AW),
-  .SRAM0_AW     (16)
-) u_graph_top (
-  .clk            (clk),
-  .rst_n          (rst_int_n),
 
-  .start          (graph_start),
-  .prog_len       (reg_ucode_len[15:0]),
-  .scheduler_mode (1'b0), 
-
-  // Graph program SRAM
-  .prog_rd_en     (graph_prog_rd_en),
-  .prog_rd_addr   (graph_prog_rd_addr),
-  .prog_rd_data   (graph_prog_rd_data),
-
-  // Tensor descriptor table
-  .td_rd0_addr    (td_rd0_addr),
-  .td_rd0_data    (td_rd0_data),
-  .td_rd1_addr    (td_rd1_addr),
-  .td_rd1_data    (td_rd1_data),
-  .td_rd2_addr    (td_rd2_addr),
-  .td_rd2_data    (td_rd2_data),
-
-  // GEMM
-  .gm_cmd_valid   (),
-  .gm_cmd_src0    (),
-  .gm_cmd_src1    (),
-  .gm_cmd_dst     (),
-  .gm_cmd_M       (),
-  .gm_cmd_N       (),
-  .gm_cmd_K       (),
-  .gm_cmd_flags   (),
-  .gm_cmd_imm     (),
-  .gm_cmd_dtype   (),
-  .gm_done        (1'b1),
-
-  // Softmax
-  .sm_cmd_valid   (),
-  .sm_src_base    (),
-  .sm_dst_base    (),
-  .sm_length      (),
-  .sm_cmd_dtype   (),
-  .sm_done        (1'b0),
-
-  // Reduce
-  .re_cmd_valid   (),
-  .re_cmd_opcode  (),
-  .re_cmd_src_base(),
-  .re_cmd_dst_base(),
-  .re_cmd_reduce_dim(),
-  .re_cmd_outer_count(),
-  .re_done        (1'b0),
-
-  // Math
-  .me_cmd_valid   (),
-  .me_cmd_opcode  (),
-  .me_cmd_src_base(),
-  .me_cmd_dst_base(),
-  .me_cmd_length  (),
-  .me_cmd_dtype   (),
-  .me_done        (1'b0),
-
-  // Gather/Slice/Concat/Pool/Pad/Resize/Cast
-  .ga_cmd_valid   (), .ga_cmd_src_base(), .ga_cmd_idx_base(), .ga_cmd_dst_base(),
-  .ga_cmd_num_indices(), .ga_cmd_row_size(), .ga_cmd_num_rows(), .ga_done(1'b0),
-
-  .sl_cmd_valid   (), .sl_cmd_src_base(), .sl_cmd_dst_base(),
-  .sl_cmd_src_row_len(), .sl_cmd_dst_row_len(), .sl_cmd_start_offset(),
-  .sl_cmd_num_rows(), .sl_done(1'b0),
-
-  .ct_cmd_valid   (), .ct_cmd_src0_base(), .ct_cmd_src1_base(), .ct_cmd_dst_base(),
-  .ct_cmd_src0_row_len(), .ct_cmd_src1_row_len(), .ct_cmd_num_rows(), .ct_done(1'b0),
-
-  .ap_cmd_valid   (), .ap_cmd_src_base(), .ap_cmd_dst_base(),
-  .ap_cmd_C(), .ap_cmd_H(), .ap_cmd_W(),
-  .ap_cmd_kh(), .ap_cmd_kw(), .ap_cmd_sh(), .ap_cmd_sw(), .ap_done(1'b1),
-
-  .mp_cmd_valid   (), .mp_cmd_src_base(), .mp_cmd_dst_base(),
-  .mp_cmd_C(), .mp_cmd_H(), .mp_cmd_W(),
-  .mp_cmd_kh(), .mp_cmd_kw(), .mp_cmd_sh(), .mp_cmd_sw(), .mp_done(1'b1),
-
-  .pd_cmd_valid   (), .pd_cmd_src_base(), .pd_cmd_dst_base(),
-  .pd_cmd_C(), .pd_cmd_H(), .pd_cmd_W(),
-  .pd_cmd_pad_top(), .pd_cmd_pad_bottom(), .pd_cmd_pad_left(), .pd_cmd_pad_right(),
-  .pd_done(1'b0),
-
-  .rz_cmd_valid   (), .rz_cmd_src_base(), .rz_cmd_dst_base(),
-  .rz_cmd_C(), .rz_cmd_in_H(), .rz_cmd_in_W(), .rz_cmd_out_H(), .rz_cmd_out_W(),
-  .rz_done(1'b0),
-
-  .ca_cmd_valid   (), .ca_cmd_src_base(), .ca_cmd_dst_base(), .ca_cmd_length(),
-  .ca_cmd_src_dtype(), .ca_cmd_dst_dtype(), .ca_done(1'b0),
-
-  // DMA
-  .dma_cmd_valid  (graph_dma_cmd_valid),
-  .dma_ddr_addr   (graph_dma_ddr_addr),
-  .dma_sram_addr  (graph_dma_sram_addr),
-  .dma_length     (graph_dma_length),
-  .dma_direction  (graph_dma_direction),
-  .dma_strided    (graph_dma_strided),
-  .dma_stride     (graph_dma_stride),
-  .dma_count      (graph_dma_count),
-  .dma_block_len  (graph_dma_block_len),
-  .dma_done       (graph_dma_done),
-
-  // EW SRAM
-  .ew_rd_en       (),
-  .ew_rd_addr     (),
-  .ew_rd_data     (8'd0),
-  .ew_wr_en       (),
-  .ew_wr_addr     (),
-  .ew_wr_data     (),
-  .ew_busy        (),
-
-  // perf counters
-  .perf_total_cycles  (),
-  .perf_gemm_cycles   (),
-  .perf_softmax_cycles(),
-  .perf_dma_cycles    (),
-  .perf_reduce_cycles (),
-  .perf_math_cycles   (),
-  .perf_gather_cycles (),
-  .perf_slice_cycles  (),
-  .perf_concat_cycles (),
-  .perf_avgpool_cycles(),
-  .perf_ew_cycles     (),
-  .perf_overlap_cycles(),
-  .perf_stall_cycles  (),
-
-  // status/debug
-  .graph_done     (graph_done),
-  .graph_busy     (graph_busy),
-  .graph_status   (graph_status),
-  .graph_pc       (graph_pc),
-  .graph_last_op  (graph_last_op)
-);
 
 
 endmodule
