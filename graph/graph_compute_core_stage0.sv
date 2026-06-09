@@ -40,22 +40,22 @@ module graph_compute_core_stage0 #(
     parameter int DATA_W       = 8,
     parameter int ACC_W        = 32
 )(
-    input  logic                     clk,
-    input  logic                     rst_n,
+    input      wire                    clk,
+    input      wire                    rst_n,
 
-    input  logic                     start,
-    input  logic [15:0]              prog_len,
-    input  logic                     scheduler_mode,
+    input      wire                    start,
+    input      wire[15:0]              prog_len,
+    input      wire                    scheduler_mode,
 
     // Graph program write port from AXI-Lite window
-    input  logic                     graph_prog_we,
-    input  logic [PROG_SRAM_AW-1:0]  graph_prog_waddr,
-    input  logic [127:0]             graph_prog_wdata,
+    input     wire                     graph_prog_we,
+    input     wire [PROG_SRAM_AW-1:0]  graph_prog_waddr,
+    input     wire [127:0]             graph_prog_wdata,
 
     // Tensor descriptor write port from AXI-Lite window
-    input  logic                     tdesc_we,
-    input  logic [TDESC_AW-1:0]      tdesc_waddr,
-    input  logic [255:0]             tdesc_wdata,
+    input      wire                     tdesc_we,
+    input      wire [TDESC_AW-1:0]      tdesc_waddr,
+    input      wire [255:0]             tdesc_wdata,
 
     // DMA command interface to the outer AXI/artifact DMA adapter
     output logic                     dma_cmd_valid,
@@ -67,18 +67,18 @@ module graph_compute_core_stage0 #(
     output logic [31:0]              dma_stride,
     output logic [15:0]              dma_count,
     output logic [15:0]              dma_block_len,
-    input  logic                     dma_done,
+    input  wire                    dma_done,
 
     // 64-bit SRAM0 DMA access port owned by tiny_npu_top adapter.
     // LOAD path writes up to 8 bytes per cycle into internal SRAM0.
-    input  logic                     dma_sram_wr_en,
-    input  logic [SRAM0_AW-1:0]      dma_sram_wr_addr,
-    input  logic [63:0]              dma_sram_wr_data,
-    input  logic [7:0]               dma_sram_wr_mask,
+    input   wire                       dma_sram_wr_en,
+    input   wire   [SRAM0_AW-1:0]      dma_sram_wr_addr,
+    input   wire   [63:0]              dma_sram_wr_data,
+    input   wire   [7:0]               dma_sram_wr_mask,
 
     // STORE path reads up to 8 bytes per cycle from internal SRAM0.
-    input  logic                     dma_sram_rd_en,
-    input  logic [SRAM0_AW-1:0]      dma_sram_rd_addr,
+    input  wire                     dma_sram_rd_en,
+    input  wire [SRAM0_AW-1:0]      dma_sram_rd_addr,
     output logic [63:0]              dma_sram_rd_data,
 
     // Status/debug
@@ -147,28 +147,31 @@ module graph_compute_core_stage0 #(
 // Debug helper: dump SRAM0[0x5a00 : 0x5a3f]
 // Only for simulation/debug.
 // -------------------------------------------------------------------------
-`ifdef SYNTHESIS
-task automatic dump_sram0_5a00(input string tag);
-    logic [63:0] word64;
-    int off;
-    int b;
-begin
-    $display("[%0t] ===== SRAM0_DUMP %s base=0x5a00 =====", $time, tag);
 
-    for (off = 0; off < 64; off = off + 8) begin
-        word64 = 64'd0;
-        for (b = 0; b < 8; b = b + 1) begin
-            word64[8*b +: 8] = sram0[16'h5a00 + off + b];
-        end
+// `ifdef SYNTHESIS
+// `ifdef NPU_SIM_DEBUG
+// task automatic dump_sram0_5a00(input string tag);
+//     logic [63:0] word64;
+//     int off;
+//     int b;
+// begin
+//     $display("[%0t] ===== SRAM0_DUMP %s base=0x5a00 =====", $time, tag);
 
-        $display("[%0t] SRAM0_DUMP %s addr=0x%04x data=0x%016x",
-                 $time, tag, 16'h5a00 + off[15:0], word64);
-    end
+//     for (off = 0; off < 64; off = off + 8) begin
+//         word64 = 64'd0;
+//         for (b = 0; b < 8; b = b + 1) begin
+//             word64[8*b +: 8] = sram0[16'h5a00 + off + b];
+//         end
 
-    $display("[%0t] ===== SRAM0_DUMP_END %s =====", $time, tag);
-end
-endtask
-`endif
+//         $display("[%0t] SRAM0_DUMP %s addr=0x%04x data=0x%016x",
+//                  $time, tag, 16'h5a00 + off[15:0], word64);
+//     end
+
+//     $display("[%0t] ===== SRAM0_DUMP_END %s =====", $time, tag);
+// end
+// endtask
+// `endif
+// `endif
 
 /////////////////////////////////////////
 
@@ -181,24 +184,9 @@ endtask
     logic [SRAM0_AW-1:0]      ew_wr_addr;
     logic [7:0]               ew_wr_data;
     logic                     ew_busy;
-
-    always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        ew_rd_data <= 8'd0;
-    end else if (ew_rd_en) begin
-        ew_rd_data <= sram0[ew_rd_addr];
-    end
-end
-
+    
     // DMA STORE read port, little-endian lane mapping:
     // lane 0 -> byte at rd_addr + 0
-    always_comb begin
-        dma_sram_rd_data = 64'd0;
-        for (int j = 0; j < 8; j++) begin
-            dma_sram_rd_data[8*j +: 8] = sram0[(dma_sram_rd_addr + j[SRAM0_AW-1:0])];
-        end
-    end
-
     // -------------------------------------------------------------------------
     // Non-DMA engine command ports from graph_top
     // -------------------------------------------------------------------------
@@ -306,25 +294,19 @@ end
     logic [31:0]              dma_dbg_wr_count;
     logic [31:0]              gemm_dbg_wr_count;
 
-    always_ff @(posedge clk or negedge rst_n) begin
+always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        gemm_sram_rd_data <= 8'd0;
-    end else if (gemm_sram_rd_en) begin
-        gemm_sram_rd_data <= sram0[gemm_sram_rd_addr];
+        gemm_acc_rd_data <= '0;
+    end else if (gemm_acc_rd_en) begin
+        gemm_acc_rd_data <= gemm_acc_mem[gemm_acc_rd_addr];
     end
 end
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            gemm_acc_rd_data <= '0;
-        end else if (gemm_acc_rd_en) begin
-            gemm_acc_rd_data <= gemm_acc_mem[gemm_acc_rd_addr];
-        end
-
-        if (gemm_acc_wr_en) begin
-            gemm_acc_mem[gemm_acc_wr_addr] <= gemm_acc_wr_data;
-        end
+always_ff @(posedge clk) begin
+    if (gemm_acc_wr_en) begin
+        gemm_acc_mem[gemm_acc_wr_addr] <= gemm_acc_wr_data;
     end
+end
 
     systolic_array #(
         .M      (ARRAY_M),
@@ -398,6 +380,7 @@ end
 // ================================================================
     // Softmax Engine
     // ================================================================
+    logic [7:0] sm_rd_data;
     logic        sm_busy;
     logic        sm_rd_en;
     logic [SRAM0_AW-1:0] sm_rd_addr;
@@ -979,6 +962,12 @@ logic [7:0]                   sram0_b_dout [SRAM0_NUM_BANKS];
 sram0_rd_src_e sram0_rd_src_d, sram0_rd_src_q;
 logic [2:0]    sram0_rd_bank_d, sram0_rd_bank_q;
 
+logic [7:0] sram0_rd_data_mux;
+
+always_comb begin
+    sram0_rd_data_mux = sram0_a_dout[sram0_rd_bank_q];
+end
+
 logic dma_sram_rd_en_q;
 logic [2:0] dma_rd_bank_q [8];
 
@@ -1079,43 +1068,46 @@ always_ff @(posedge clk or negedge rst_n) begin
   if (!rst_n) begin
     sram0_rd_src_q  <= SRAM_RD_NONE;
     sram0_rd_bank_q <= 3'd0;
-
-    gemm_sram_rd_data <= 8'd0;
-    ew_rd_data        <= 8'd0;
-    sm_rd_data        <= 8'd0;
-    re_rd_data        <= 8'd0;
-    me_rd_data        <= 8'd0;
-    ga_rd_data        <= 8'd0;
-    sl_rd_data        <= 8'd0;
-    ct_rd_data        <= 8'd0;
-    ap_rd_data        <= 8'd0;
-    mp_rd_data        <= 8'd0;
-    pd_rd_data        <= 8'd0;
-    rz_rd_data        <= 8'd0;
-    ca_rd_data        <= 8'd0;
   end else begin
     sram0_rd_src_q  <= sram0_rd_src_d;
     sram0_rd_bank_q <= sram0_rd_bank_d;
-
-    unique case (sram0_rd_src_q)
-      SRAM_RD_GEMM: gemm_sram_rd_data <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_EW:   ew_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_SM:   sm_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_RE:   re_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_ME:   me_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_GA:   ga_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_SL:   sl_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_CT:   ct_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_AP:   ap_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_MP:   mp_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_PD:   pd_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_RZ:   rz_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      SRAM_RD_CA:   ca_rd_data        <= sram0_a_dout[sram0_rd_bank_q];
-      default: ;
-    endcase
   end
 end
-always_comb
+
+always_comb begin
+  gemm_sram_rd_data = 8'd0;
+  ew_rd_data        = 8'd0;
+  sm_rd_data        = 8'd0;
+  re_rd_data        = 8'd0;
+  me_rd_data        = 8'd0;
+  ga_rd_data        = 8'd0;
+  sl_rd_data        = 8'd0;
+  ct_rd_data        = 8'd0;
+  ap_rd_data        = 8'd0;
+  mp_rd_data        = 8'd0;
+  pd_rd_data        = 8'd0;
+  rz_rd_data        = 8'd0;
+  ca_rd_data        = 8'd0;
+
+  unique case (sram0_rd_src_q)
+    SRAM_RD_GEMM: gemm_sram_rd_data = sram0_rd_data_mux;
+    SRAM_RD_EW:   ew_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_SM:   sm_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_RE:   re_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_ME:   me_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_GA:   ga_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_SL:   sl_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_CT:   ct_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_AP:   ap_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_MP:   mp_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_PD:   pd_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_RZ:   rz_rd_data        = sram0_rd_data_mux;
+    SRAM_RD_CA:   ca_rd_data        = sram0_rd_data_mux;
+    default: ;
+  endcase
+end
+
+always_comb begin
   for (int i = 0; i < SRAM0_NUM_BANKS; i++) begin
     sram0_b_en[i]   = 1'b0;
     sram0_b_we[i]   = 1'b0;
@@ -1141,11 +1133,11 @@ always_comb
         sram0_b_din[bank]  = dma_sram_wr_data[8*k +: 8];
       end
     end
-
+  end
   // ------------------------------------------------------------
   // Byte writes from engines
   // ------------------------------------------------------------
-  end else if (gemm_sram_wr_en) begin
+    else if (gemm_sram_wr_en) begin
     sram0_b_en[sram0_bank(gemm_sram_wr_addr)]   = 1'b1;
     sram0_b_we[sram0_bank(gemm_sram_wr_addr)]   = 1'b1;
     sram0_b_addr[sram0_bank(gemm_sram_wr_addr)] = sram0_row(gemm_sram_wr_addr);
@@ -1239,11 +1231,22 @@ always_comb
       sram0_b_addr[bank] = sram0_row(byte_addr);
     end
   end
+end
 
+// ------------------------------------------------------------
+// DMA STORE read response packing.
+// sram_dp is already a synchronous-read memory:
+//   cycle N   : drive dma_sram_rd_en + dma_sram_rd_addr to SRAM banks
+//   cycle N+1 : sram0_b_dout[] is valid after the clock edge
+//
+// Therefore do NOT register sram0_b_dout[] again here.  Register only the
+// request metadata, then expose dma_sram_rd_data combinationally from the
+// valid sram0_b_dout[].  Otherwise the outer DMA STORE path sees an extra
+// cycle of latency and writes repeated/shifted 64-bit words.
+// ------------------------------------------------------------
 always_ff @(posedge clk or negedge rst_n) begin
   if (!rst_n) begin
-    dma_sram_rd_en_q   <= 1'b0;
-    dma_sram_rd_data   <= 64'd0;
+    dma_sram_rd_en_q <= 1'b0;
     for (int k = 0; k < 8; k++) begin
       dma_rd_bank_q[k] <= 3'd0;
     end
@@ -1255,11 +1258,15 @@ always_ff @(posedge clk or negedge rst_n) begin
         dma_rd_bank_q[k] <= sram0_bank(dma_sram_rd_addr + k[SRAM0_AW-1:0]);
       end
     end
+  end
+end
 
-    if (dma_sram_rd_en_q) begin
-      for (int k = 0; k < 8; k++) begin
-        dma_sram_rd_data[8*k +: 8] <= sram0_b_dout[dma_rd_bank_q[k]];
-      end
+always_comb begin
+  dma_sram_rd_data = 64'd0;
+
+  if (dma_sram_rd_en_q) begin
+    for (int k = 0; k < 8; k++) begin
+      dma_sram_rd_data[8*k +: 8] = sram0_b_dout[dma_rd_bank_q[k]];
     end
   end
 end
