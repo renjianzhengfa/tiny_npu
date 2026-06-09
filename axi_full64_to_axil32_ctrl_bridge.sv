@@ -11,40 +11,41 @@ module axi_full64_to_axil32_ctrl_bridge #(
   parameter type axi_req_t = logic,
   parameter type axi_rsp_t = logic
 ) (
-  input  logic clk_i,
-  input  logic rst_ni,
+input  wire clk_i,
+input  wire rst_ni,
 
-  input  axi_req_t slv_req_i,
-  output axi_rsp_t slv_rsp_o,
+input  axi_req_t slv_req_i,
+output axi_rsp_t slv_rsp_o,
 
-  output logic [31:0] m_axil_awaddr_o,
-  output logic        m_axil_awvalid_o,
-  input  logic        m_axil_awready_i,
+output logic [31:0] m_axil_awaddr_o,
+output logic        m_axil_awvalid_o,
+input  wire         m_axil_awready_i,
 
-  output logic [31:0] m_axil_wdata_o,
-  output logic [3:0]  m_axil_wstrb_o,
-  output logic        m_axil_wvalid_o,
-  input  logic        m_axil_wready_i,
+output logic [31:0] m_axil_wdata_o,
+output logic [3:0]  m_axil_wstrb_o,
+output logic        m_axil_wvalid_o,
+input  wire         m_axil_wready_i,
 
-  input  logic [1:0]  m_axil_bresp_i,
-  input  logic        m_axil_bvalid_i,
-  output logic        m_axil_bready_o,
+input  wire [1:0]   m_axil_bresp_i,
+input  wire         m_axil_bvalid_i,
+output logic        m_axil_bready_o,
 
-  output logic [31:0] m_axil_araddr_o,
-  output logic        m_axil_arvalid_o,
-  input  logic        m_axil_arready_i,
+output logic [31:0] m_axil_araddr_o,
+output logic        m_axil_arvalid_o,
+input  wire         m_axil_arready_i,
 
-  input  logic [31:0] m_axil_rdata_i,
-  input  logic [1:0]  m_axil_rresp_i,
-  input  logic        m_axil_rvalid_i,
-  output logic        m_axil_rready_o
+input  wire [31:0]  m_axil_rdata_i,
+input  wire [1:0]   m_axil_rresp_i,
+input  wire         m_axil_rvalid_i,
+output logic        m_axil_rready_o
 );
-
+`ifndef SYNTHESIS
   initial begin
     if (AXI_DATA_W != 64) begin
       $error("axi_full64_to_axil32_ctrl_bridge first version expects AXI_DATA_W=64.");
     end
   end
+`endif
 
   typedef enum logic [1:0] {
     WR_IDLE,
@@ -79,40 +80,66 @@ module axi_full64_to_axil32_ctrl_bridge #(
   logic [1:0]            rd_resp_q, rd_resp_d;
   logic                  axil_ar_done_q, axil_ar_done_d;
 
+    // ---------------------------------------------------------------------------
+  // 64-bit AXI full -> 32-bit AXI-Lite lane adapter
+  //
+  // Why this is strobe-aware:
+  // - Standard 64-bit AXI writes to addr+4 usually place payload in wdata[63:32]
+  //   with wstrb[7:4].
+  // - The UART master REG_WRITE32 path may always place the 32-bit payload in
+  //   wdata[31:0] with wstrb[3:0], even when the address is addr+4.
+  //
+  // Therefore:
+  // - Prefer the lane indicated by WSTRB.
+  // - Fall back to addr[2] only if WSTRB is zero or unusual.
+  // ---------------------------------------------------------------------------
   function automatic logic [31:0] pick_wdata32(
-    input logic [AXI_DATA_W-1:0] data_i,
-    input logic [AXI_ADDR_W-1:0] addr_i
+    input logic [AXI_DATA_W-1:0]   data_i,
+    input logic [AXI_DATA_W/8-1:0] strb_i,
+    input logic [AXI_ADDR_W-1:0]   addr_i
   );
-    if (addr_i[2])
-      pick_wdata32 = data_i[63:32];
-    else
-      pick_wdata32 = data_i[31:0];
+    begin
+      if (|strb_i[3:0]) begin
+        pick_wdata32 = data_i[31:0];
+      end else if (|strb_i[7:4]) begin
+        pick_wdata32 = data_i[63:32];
+      end else begin
+        pick_wdata32 = addr_i[2] ? data_i[63:32] : data_i[31:0];
+      end
+    end
   endfunction
 
   function automatic logic [3:0] pick_wstrb32(
     input logic [AXI_DATA_W/8-1:0] strb_i,
-    input logic [AXI_ADDR_W-1:0] addr_i
+    input logic [AXI_ADDR_W-1:0]   addr_i
   );
-    if (addr_i[2])
-      pick_wstrb32 = strb_i[7:4];
-    else
-      pick_wstrb32 = strb_i[3:0];
+    begin
+      if (|strb_i[3:0]) begin
+        pick_wstrb32 = strb_i[3:0];
+      end else if (|strb_i[7:4]) begin
+        pick_wstrb32 = strb_i[7:4];
+      end else begin
+        pick_wstrb32 = 4'hF;
+      end
+    end
   endfunction
 
+  // For the current Python REG_READ32 model, always return the AXI-Lite 32-bit
+  // read data in the low 32 bits of the full AXI read channel.
+  //
+  // This avoids Python needing to check addr[2] and pick high/low lane.
   function automatic logic [AXI_DATA_W-1:0] place_rdata32(
-    input logic [31:0] data_i,
-    input logic [AXI_ADDR_W-1:0] addr_i
+    input logic [31:0]             data_i,
+    input logic [AXI_ADDR_W-1:0]   addr_i
   );
     logic [AXI_DATA_W-1:0] tmp;
     begin
       tmp = '0;
-      if (addr_i[2])
-        tmp[63:32] = data_i;
-      else
-        tmp[31:0] = data_i;
+      tmp[31:0] = data_i;
       place_rdata32 = tmp;
     end
   endfunction
+  
 
   // Full AXI response path.
   always_comb begin
@@ -140,7 +167,8 @@ module axi_full64_to_axil32_ctrl_bridge #(
   assign m_axil_awaddr_o  = wr_addr_q[31:0] - AXIL_BASE_ADDR32;
   assign m_axil_awvalid_o = (wr_state_q == WR_AXIL) && !axil_aw_done_q;
 
-  assign m_axil_wdata_o   = pick_wdata32(wr_data_q, wr_addr_q);
+  assign m_axil_wdata_o   = pick_wdata32(wr_data_q, wr_strb_q, wr_addr_q);
+
   assign m_axil_wstrb_o   = pick_wstrb32(wr_strb_q, wr_addr_q);
   assign m_axil_wvalid_o  = (wr_state_q == WR_AXIL) && !axil_w_done_q;
 
