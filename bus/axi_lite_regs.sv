@@ -450,6 +450,12 @@ localparam logic [AXIL_ADDR_W-1:0] TDESC_LAST_HIGH32        == 32'h6c;
                     8'h64:                      s_axil_rdata <= TDESC_LAST_WADDR  ;
                     8'h68:                      s_axil_rdata <= TDESC_LAST_LOW32  ;
                     8'h6C:                      s_axil_rdata <= TDESC_LAST_HIGH32 ;
+
+                    8'h70:                      s_axil_rdata <= i_perf_total_cycles
+                    8'h74:                      s_axil_rdata <= i_perf_gemm_cycles 
+                    8'h78:                      s_axil_rdata <= i_perf_dma_cycles  
+                    8'h7C:                      s_axil_rdata <= i_perf_ew_cycles   
+                    8'h80:                      s_axil_rdata <= i_perf_stall_cycles
                     default:                 s_axil_rdata <= 32'hDEAD_BEEF;
                 endcase
             end
