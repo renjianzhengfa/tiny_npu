@@ -1,22 +1,9 @@
-
-`default_nettype wire
-// ===========================================================================
-//  AXI4-Lite Slave Register Bank for NPU Control/Status
-//
-//  Implements full AXI4-Lite write and read protocol with:
-//    - CTRL register: START bit auto-clears after 1 cycle (pulse),
-//      SOFT_RESET bit holds asserted for 4 cycles then auto-clears.
-//    - STATUS register: read-only, driven by external done/busy/error inputs.
-//    - All other registers: standard read-write with reset defaults of 0.
-//
-//  Fully synthesizable -- no delays.
-// ===========================================================================
 module axi_lite_regs
     import npu_pkg::*;
     import axi_types_pkg::*;
     #(
         parameter       UCODE_AW        =   10,
-        parameter       GRAPH_PROG_AW   =   8,   // 
+        parameter       GRAPH_PROG_AW   =   9,   // 
         parameter       TDESC_AW        =   8    //
     )(
     input  logic                      clk,
@@ -102,8 +89,37 @@ module axi_lite_regs
     //  Tensor descriptor table 
     output logic                      tdesc_we_o,
     output logic [TDESC_AW-1:0]       tdesc_waddr_o,
-    output logic [255:0]              tdesc_wdata_o
+    output logic [255:0]              tdesc_wdata_o,
+
+    input logic [31:0]             perf_total_cycles,
+    input logic [31:0]             perf_gemm_cycles,
+    input logic [31:0]             perf_dma_cycles,
+    input logic [31:0]             perf_ew_cycles,
+    input logic [31:0]             perf_stall_cycles
 );
+///////
+//performance
+///////
+logic [31:0]             i_perf_total_cycles  ;
+logic [31:0]             i_perf_gemm_cycles   ;
+logic [31:0]             i_perf_dma_cycles    ;
+logic [31:0]             i_perf_ew_cycles     ;
+logic [31:0]             i_perf_stall_cycles  ;
+
+always_comb begin
+    if(~rst_n)  begin
+        i_perf_total_cycles <=  0;
+        i_perf_gemm_cycles  <=  0;
+        i_perf_dma_cycles   <=  0;
+        i_perf_ew_cycles    <=  0;
+        i_perf_stall_cycles <=  0;
+    end
+    else
+        i_perf_total_cycles <=  perf_total_cycles;
+        i_perf_gemm_cycles  <=  perf_gemm_cycles ;
+        i_perf_dma_cycles   <=  perf_dma_cycles  ;
+        i_perf_ew_cycles    <=  perf_ew_cycles   ;
+        i_perf_stall_cycles <=  perf_stall_cycles;
 
     // =======================================================================
     //  Internal register storage
@@ -166,7 +182,7 @@ module axi_lite_regs
 //   +0x8 -> instr[95:64]
 //   +0xC -> instr[127:96], then commit to ucode SRAM
 // =======================================================================
-// 半开区间：[BASE, END)
+// 
 localparam logic [15:0] REG_UCODE_WIN_BASE   = 16'h1000;
 localparam logic [15:0] REG_UCODE_WIN_END    = 16'h2000;
 
@@ -223,6 +239,15 @@ logic [127:0]        ucode_stage;
 logic [UCODE_AW-1:0] ucode_stage_idx;
 logic [3:0]          ucode_stage_valid;
 
+localparam logic [AXIL_ADDR_W-1:0] GRAPH_PROG_COMMIT_COUNT  == 32'h50;
+localparam logic [AXIL_ADDR_W-1:0] GRAPH_PROG_LAST_WADDR    == 32'h54;
+localparam logic [AXIL_ADDR_W-1:0] GRAPH_PROG_LAST_LOW32    == 32'h58;
+localparam logic [AXIL_ADDR_W-1:0] GRAPH_PROG_LAST_HIGH32   == 32'h5c;
+
+localparam logic [AXIL_ADDR_W-1:0] TDESC_COMMIT_COUNT       == 32'h60;
+localparam logic [AXIL_ADDR_W-1:0] TDESC_LAST_WADDR         == 32'h64;  
+localparam logic [AXIL_ADDR_W-1:0] TDESC_LAST_LOW32         == 32'h68;
+localparam logic [AXIL_ADDR_W-1:0] TDESC_LAST_HIGH32        == 32'h6c;    
 
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -416,6 +441,15 @@ logic [3:0]          ucode_stage_valid;
                     REG_GRAPH_STATUS[7:0]:   s_axil_rdata <= graph_status_i;
                     REG_GRAPH_PC[7:0]:       s_axil_rdata <= graph_pc_i;
                     REG_GRAPH_LAST_OP[7:0]:  s_axil_rdata <= graph_last_op_i;
+                    8'h50:                      s_axil_rdata <= GRAPH_PROG_COMMIT_COUNT;
+                    8'h54:                      s_axil_rdata <= GRAPH_PROG_LAST_WADDR  ;
+                    8'h58:                      s_axil_rdata <= GRAPH_PROG_LAST_LOW32  ;
+                    8'h5C:                      s_axil_rdata <= GRAPH_PROG_LAST_HIGH32 ;
+
+                    8'h60:                      s_axil_rdata <= TDESC_COMMIT_COUNT;
+                    8'h64:                      s_axil_rdata <= TDESC_LAST_WADDR  ;
+                    8'h68:                      s_axil_rdata <= TDESC_LAST_LOW32  ;
+                    8'h6C:                      s_axil_rdata <= TDESC_LAST_HIGH32 ;
                     default:                 s_axil_rdata <= 32'hDEAD_BEEF;
                 endcase
             end
@@ -534,8 +568,7 @@ always_ff @(posedge clk or negedge rst_n) begin
       end
     end
   end
-end
-
+end 
 
 logic [255:0]        tdesc_stage;
 logic [TDESC_AW-1:0] tdesc_stage_idx;
@@ -593,7 +626,45 @@ always_ff @(posedge clk or negedge rst_n) begin
 end
 
 
+always_comb begin
+    if(~rst_n) begin 
+        GRAPH_PROG_COMMIT_COUNT = 0;
+        GRAPH_PROG_LAST_WADDR   = 0;
+        GRAPH_PROG_LAST_LOW32   = 0;
+        GRAPH_PROG_LAST_HIGH32 = 0;
+    end else if(graph_prog_we_o == 1'b1)begin
+        GRAPH_PROG_COMMIT_COUNT <= GRAPH_PROG_COMMIT_COUNT + 1;
+        GRAPH_PROG_LAST_WADDR   <= graph_prog_win_idx;
+        GRAPH_PROG_LAST_LOW32   <= graph_prog_wdata[31:0];
+        GRAPH_PROG_LAST_HIGH32  <= graph_prog_wdata[127:96];
+    end else begin 
+        GRAPH_PROG_COMMIT_COUNT <= GRAPH_PROG_COMMIT_COUNT;
+        GRAPH_PROG_LAST_WADDR   <= GRAPH_PROG_LAST_WADDR  ;
+        GRAPH_PROG_LAST_LOW32   <= GRAPH_PROG_LAST_LOW32  ;
+        GRAPH_PROG_LAST_HIGH32  <= GRAPH_PROG_LAST_HIGH32 ;
+    end
+end
+
+always_comb begin
+    if(~rst_n) begin 
+        TDESC_COMMIT_COUNT = 0;
+        TDESC_LAST_WADDR   = 0;
+        TDESC_LAST_LOW32   = 0;
+        TDESC_LAST_HIGH32 = 0;
+    end else if(tdesc_we_o == 1'b1)begin
+        TDESC_COMMIT_COUNT <= TDESC_COMMIT_COUNT + 1;
+        TDESC_LAST_WADDR   <= tdesc_win_idx;
+        TDESC_LAST_LOW32   <= tdesc_wdata[31:0];
+        TDESC_LAST_HIGH32  <= tdesc_wdata[255:224];
+    end else begin 
+        TDESC_COMMIT_COUNT <= TDESC_COMMIT_COUNT;
+        TDESC_LAST_WADDR   <= TDESC_LAST_WADDR  ;
+        TDESC_LAST_LOW32   <= TDESC_LAST_LOW32  ;
+        TDESC_LAST_HIGH32  <= TDESC_LAST_HIGH32 ;
+    end
+end
+
+
 
 endmodule : axi_lite_regs
-
 
