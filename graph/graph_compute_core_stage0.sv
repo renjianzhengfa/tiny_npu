@@ -86,7 +86,13 @@ module graph_compute_core_stage0 #(
     output logic                     graph_busy,
     output logic [31:0]              graph_status,
     output logic [15:0]              graph_pc,
-    output logic [7:0]               graph_last_op
+    output logic [7:0]               graph_last_op,
+
+    output logic [31:0]              perf_total_cycles,
+    output logic [31:0]              perf_dma_cycles,
+    output logic [31:0]              perf_gemm_cycles,
+    output logic [31:0]              perf_ew_cycles,
+    output logic [31:0]              perf_stall_cycles
 );
 
     // -------------------------------------------------------------------------
@@ -889,19 +895,19 @@ end
         .ew_wr_data     (ew_wr_data),
         .ew_busy        (ew_busy),
 
-        .perf_total_cycles  (),
-        .perf_gemm_cycles   (),
+        .perf_total_cycles  (perf_total_cycles),
+        .perf_gemm_cycles   (perf_gemm_cycles),
         .perf_softmax_cycles(),
-        .perf_dma_cycles    (),
+        .perf_dma_cycles    (perf_dma_cycles),
         .perf_reduce_cycles (),
         .perf_math_cycles   (),
         .perf_gather_cycles (),
         .perf_slice_cycles  (),
         .perf_concat_cycles (),
         .perf_avgpool_cycles(),
-        .perf_ew_cycles     (),
+        .perf_ew_cycles     (perf_ew_cycles),
         .perf_overlap_cycles(),
-        .perf_stall_cycles  (),
+        .perf_stall_cycles  (perf_stall_cycles),
 
         .graph_done     (graph_done),
         .graph_busy     (graph_busy),
