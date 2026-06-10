@@ -238,13 +238,6 @@ end
     // =========================================================================
     localparam int GRAPH_SRAM_BYTES      = 65536;
 
-    logic        graph_sram_dma_wr_en;
-    logic [15:0] graph_sram_dma_wr_addr;
-    logic [63:0] graph_sram_dma_wr_data;
-    logic [7:0]  graph_sram_dma_wr_mask;
-    logic        graph_sram_dma_rd_en;
-    logic [15:0] graph_sram_dma_rd_addr;
-  
 `ifdef NPU_KEEP_ARTIFACT_DDR
     // Optional legacy artifact-fast virtual DDR.
     // Keep this only when you explicitly want the old fast artifact path.
@@ -266,6 +259,14 @@ end
 
     logic        artifact_dma_done_pulse;
 
+    // 64-bit/cycle access port into u_graph_core's owned SRAM0.
+    logic        graph_sram_dma_wr_en;
+    logic [15:0] graph_sram_dma_wr_addr;
+    logic [63:0] graph_sram_dma_wr_data;
+    logic [7:0]  graph_sram_dma_wr_mask;
+    logic        graph_sram_dma_rd_en;
+    logic [15:0] graph_sram_dma_rd_addr;
+    logic [63:0] graph_sram_dma_rd_data;
 
     // artifact_fast DMA streaming state.
     logic        artifact_dma_busy;
@@ -278,7 +279,6 @@ end
     // Real external DDR DMA state.
     // When artifact_fast_en=0, axi_dma_rd/axi_dma_wr are the real DDR path.
     // These state registers bridge AXI streaming data and u_graph_core's owned SRAM0.
-    logic [63:0] graph_sram_dma_rd_data;
     logic        real_dma_load_active;
     logic [15:0] real_dma_load_sram_addr_q;
     logic [15:0] real_dma_load_len_q;
@@ -288,18 +288,18 @@ end
     logic [15:0] real_dma_store_sram_addr_q;
     logic [15:0] real_dma_store_len_q;
     logic [15:0] real_dma_store_pos_q;
-// Real DDR STORE bridge state.
-// The graph_compute SRAM0 is a synchronous-read memory. Therefore the
-// top-level STORE bridge must first issue a SRAM read, then capture the
-// returned 64-bit data, and only then present it to axi_dma_wr.
-localparam logic [1:0] REAL_STORE_IDLE    = 2'd0;
-localparam logic [1:0] REAL_STORE_READ    = 2'd1;
-localparam logic [1:0] REAL_STORE_CAPTURE = 2'd2;
-localparam logic [1:0] REAL_STORE_SEND    = 2'd3;
 
-logic [1:0] real_store_state_q;
-logic [63:0] real_store_data_q;
+    // Real DDR STORE bridge state.
+    // The graph_compute SRAM0 is a synchronous-read memory.  Therefore the
+    // top-level STORE bridge must first issue a SRAM read, then capture the
+    // returned 64-bit data, and only then present it to axi_dma_wr.
+    localparam logic [1:0] REAL_STORE_IDLE    = 2'd0;
+    localparam logic [1:0] REAL_STORE_READ    = 2'd1;
+    localparam logic [1:0] REAL_STORE_CAPTURE = 2'd2;
+    localparam logic [1:0] REAL_STORE_SEND    = 2'd3;
 
+    logic [1:0] real_store_state_q;
+    logic [63:0] real_store_data_q;
 
 
     // EW/ReLU SRAM port from graph_top.
@@ -347,7 +347,6 @@ logic [63:0] real_store_data_q;
     logic [7:0]  graph_ap_cmd_kh, graph_ap_cmd_kw, graph_ap_cmd_sh, graph_ap_cmd_sw;
     logic [7:0]  graph_mp_cmd_kh, graph_mp_cmd_kw, graph_mp_cmd_sh, graph_mp_cmd_sw;
 
-`ifndef SYNTHESIS
     // one-shot done pulses for schedule-level demo
     logic [7:0] graph_gm_timer, graph_ap_timer, graph_mp_timer;
     logic       graph_gm_busy,  graph_ap_busy,  graph_mp_busy;
@@ -413,6 +412,7 @@ logic [63:0] real_store_data_q;
         end
     end
 
+
     
     // Fast graph DMA copy.
     // This version streams up to 8 bytes/cycle between top-level artifact_ddr_mem
@@ -430,8 +430,6 @@ logic [63:0] real_store_data_q;
     // drives graph_sram_dma_wr_* so u_graph_core can write its internal SRAM0.
     // STORE reads u_graph_core SRAM0 through graph_sram_dma_rd_* and feeds
     // axi_dma_wr through dma_wr_data_in.
-        // 64-bit/cycle access port into u_graph_core's owned SRAM0.
-
     always_comb begin : p_graph_sram_dma_comb
         integer lane;
         integer ddr_byte_addr;
@@ -492,17 +490,18 @@ logic [63:0] real_store_data_q;
             end
         end
 
-
-// Real DDR STORE: compute SRAM0 -> axi_dma_wr data_in
-//
-// Only issue a SRAM read in REAL_STORE_READ. Data is valid later and
-// is captured by p_real_graph_dma_stream before being sent to axi_dma_wr.
-if (!artifact_fast_en && graph_mode && real_dma_store_active &&
-    (real_store_state_q == REAL_STORE_READ)) begin
-    graph_sram_dma_rd_en   = 1'b1;
-    graph_sram_dma_rd_addr = real_dma_store_sram_addr_q + real_dma_store_pos_q;
-end
-
+        // -------------------------------------------------------------
+        // Real DDR STORE: compute SRAM0 -> axi_dma_wr data_in
+        //
+        // Only issue a SRAM read in REAL_STORE_READ.  Data is valid later and
+        // is captured by p_real_graph_dma_stream before being sent to axi_dma_wr.
+        // -------------------------------------------------------------
+        if (!artifact_fast_en && graph_mode && real_dma_store_active &&
+            (real_store_state_q == REAL_STORE_READ)) begin
+            graph_sram_dma_rd_en   = 1'b1;
+            graph_sram_dma_rd_addr = real_dma_store_sram_addr_q + real_dma_store_pos_q;
+        end
+    end
 
     always @(posedge clk or negedge rst_n) begin : p_artifact_fast_dma
         integer lane;
@@ -575,7 +574,8 @@ end
             end
         end
     end
-`endif
+
+
 
     // Real external-DDR Graph DMA stream control.
     // This block replaces the old dma_smoke_buf path for graph_mode.
@@ -592,10 +592,8 @@ end
             real_dma_store_sram_addr_q <= 16'd0;
             real_dma_store_len_q       <= 16'd0;
             real_dma_store_pos_q       <= 16'd0;
-
             real_store_state_q         <= REAL_STORE_IDLE;
             real_store_data_q          <= 64'd0;
-            
         end else begin
             // Start a real DDR LOAD after the graph DMA read command is accepted.
             if (graph_dma_rd_accept) begin
@@ -603,8 +601,8 @@ end
                 real_dma_load_sram_addr_q <= graph_dma_sram_addr;
                 real_dma_load_len_q       <= graph_dma_length;
                 real_dma_load_pos_q       <= 16'd0;
-                // $display("[%0t] REAL_DMA_LOAD_START sram=0x%04x len=%0d",
-                        //  $time, graph_dma_sram_addr, graph_dma_length);
+                $display("[%0t] REAL_DMA_LOAD_START sram=0x%04x len=%0d",
+                         $time, graph_dma_sram_addr, graph_dma_length);
             end else if (real_dma_load_active && dma_rd_data_valid && dma_rd_data_ready) begin
                 if (real_dma_load_pos_q + 16'd8 >= real_dma_load_len_q) begin
                     real_dma_load_pos_q <= real_dma_load_len_q;
@@ -613,108 +611,101 @@ end
                 end
 
                 if (real_dma_load_pos_q < 16'd64) begin
-                    // $display("[%0t] REAL_DMA_LOAD_WR sram=0x%04x data=0x%016x pos=%0d last=%0d",
-                            //  $time,
-                            //  real_dma_load_sram_addr_q + real_dma_load_pos_q,
-                            //  dma_rd_data[63:0],
-                            //  real_dma_load_pos_q,
-                            //  dma_rd_data_last);
+                    $display("[%0t] REAL_DMA_LOAD_WR sram=0x%04x data=0x%016x pos=%0d last=%0d",
+                             $time,
+                             real_dma_load_sram_addr_q + real_dma_load_pos_q,
+                             dma_rd_data[63:0],
+                             real_dma_load_pos_q,
+                             dma_rd_data_last);
                 end
             end
 
             if (dma_rd_done) begin
                 if (real_dma_load_active) begin
-                //      $display("[%0t] REAL_DMA_LOAD_DONE sram=0x%04x len=%0d pos=%0d",
-                //              $time,
-                //              real_dma_load_sram_addr_q,
-                //              real_dma_load_len_q,
-                //              real_dma_load_pos_q);
-                // end
+                    $display("[%0t] REAL_DMA_LOAD_DONE sram=0x%04x len=%0d pos=%0d",
+                             $time,
+                             real_dma_load_sram_addr_q,
+                             real_dma_load_len_q,
+                             real_dma_load_pos_q);
+                end
                 real_dma_load_active <= 1'b0;
             end
 
+            // Start a real DDR STORE after the graph DMA write command is accepted.
+            // STORE is split into three explicit phases because u_graph_core SRAM0
+            // is synchronous-read:
+            //   READ    : drive graph_sram_dma_rd_en/addr to u_graph_core
+            //   CAPTURE : capture the returned graph_sram_dma_rd_data
+            //   SEND    : present the captured data to axi_dma_wr
+            if (graph_dma_wr_accept) begin
+                real_dma_store_active      <= (graph_dma_length != 16'd0);
+                real_dma_store_sram_addr_q <= graph_dma_sram_addr;
+                real_dma_store_len_q       <= graph_dma_length;
+                real_dma_store_pos_q       <= 16'd0;
+                real_store_data_q          <= 64'd0;
+                real_store_state_q         <= (graph_dma_length != 16'd0) ? REAL_STORE_READ
+                                                                          : REAL_STORE_IDLE;
+                $display("[%0t] REAL_DMA_STORE_START sram=0x%04x len=%0d",
+                         $time, graph_dma_sram_addr, graph_dma_length);
+            end else if (real_dma_store_active) begin
+                unique case (real_store_state_q)
+                    REAL_STORE_IDLE: begin
+                        real_store_state_q <= REAL_STORE_READ;
+                    end
 
+                    REAL_STORE_READ: begin
+                        // p_graph_sram_dma_comb asserts graph_sram_dma_rd_en in this state.
+                        // The data appears at graph_sram_dma_rd_data after the SRAM clock edge.
+                        real_store_state_q <= REAL_STORE_CAPTURE;
+                    end
 
-// Start a real DDR STORE after the graph DMA write command is accepted.
-// Start a real DDR STORE after the graph DMA write command is accepted.
-// STORE is split into three explicit phases because u_graph_core SRAM0
-// is synchronous-read:
-//   READ    : drive graph_sram_dma_rd_en/addr to u_graph_core
-//   CAPTURE : capture the returned graph_sram_dma_rd_data
-//   SEND    : present the captured data to axi_dma_wr
-if (graph_dma_wr_accept) begin
-    real_dma_store_active      <= (graph_dma_length != 16'd0);
-    real_dma_store_sram_addr_q <= graph_dma_sram_addr;
-    real_dma_store_len_q       <= graph_dma_length;
-    real_dma_store_pos_q       <= 16'd0;
-    real_store_data_q          <= 64'd0;
-    real_store_state_q         <= (graph_dma_length != 16'd0) ? REAL_STORE_READ
-                                                              : REAL_STORE_IDLE;
+                    REAL_STORE_CAPTURE: begin
+                        // Capture data returned by u_graph_core's synchronous SRAM0.
+                        real_store_data_q  <= graph_sram_dma_rd_data;
+                        real_store_state_q <= REAL_STORE_SEND;
+                    end
 
-end else if (real_dma_store_active) begin
-    unique case (real_store_state_q)
-        REAL_STORE_IDLE: begin
-            real_store_state_q <= REAL_STORE_READ;
-        end
+                    REAL_STORE_SEND: begin
+                        // Hold this beat until axi_dma_wr consumes it.
+                        if (dma_wr_data_valid && dma_wr_data_ready) begin
+                            if (real_dma_store_pos_q < 16'd64) begin
+                                $display("[%0t] REAL_DMA_STORE_RD sram=0x%04x data=0x%016x pos=%0d last=%0d",
+                                         $time,
+                                         real_dma_store_sram_addr_q + real_dma_store_pos_q,
+                                         real_store_data_q,
+                                         real_dma_store_pos_q,
+                                         dma_wr_data_last);
+                            end
 
-        REAL_STORE_READ: begin
-            // p_graph_sram_dma_comb asserts graph_sram_dma_rd_en in this state.
-            // The data appears at graph_sram_dma_rd_data after the SRAM clock edge.
-            real_store_state_q <= REAL_STORE_CAPTURE;
-        end
+                            if (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q) begin
+                                real_dma_store_pos_q  <= real_dma_store_len_q;
+                                real_dma_store_active <= 1'b0;
+                                real_store_state_q    <= REAL_STORE_IDLE;
+                            end else begin
+                                real_dma_store_pos_q <= real_dma_store_pos_q + 16'd8;
+                                real_store_state_q   <= REAL_STORE_READ;
+                            end
+                        end
+                    end
 
-        REAL_STORE_CAPTURE: begin
-            // Capture data returned by u_graph_core's synchronous SRAM0.
-            real_store_data_q  <= graph_sram_dma_rd_data;
-            real_store_state_q <= REAL_STORE_SEND;
-        end
-
-        REAL_STORE_SEND: begin
-            // Hold this beat until axi_dma_wr consumes it.
-            if (dma_wr_data_valid && dma_wr_data_ready) begin
-                // if (real_dma_store_pos_q < 16'd64) begin
-                //     $display("[%0t] REAL_DMA_STORE_RD sram=0x%04x data=0x%016x pos=%0d last=%0d",
-                //              $time,
-                //              real_dma_store_sram_addr_q + real_dma_store_pos_q,
-                //              real_store_data_q,
-                //              real_dma_store_pos_q,
-                //              dma_wr_data_last);
-                // end
-
-                if (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q) begin
-                    real_dma_store_pos_q  <= real_dma_store_len_q;
-                    real_dma_store_active <= 1'b0;
-                    real_store_state_q    <= REAL_STORE_IDLE;
-                end else begin
-                    real_dma_store_pos_q <= real_dma_store_pos_q + 16'd8;
-                    real_store_state_q   <= REAL_STORE_READ;
-                end
+                    default: begin
+                        real_store_state_q <= REAL_STORE_IDLE;
+                    end
+                endcase
             end
-        end
-
-        default: begin
-            real_store_state_q <= REAL_STORE_IDLE;
-        end
-    endcase
-end
-
-
 
             if (dma_wr_done) begin
-                // if (real_dma_store_active) begin
-                //     $display("[%0t] REAL_DMA_STORE_DONE sram=0x%04x len=%0d pos=%0d",
-                //              $time,
-                //              real_dma_store_sram_addr_q,
-                //              real_dma_store_len_q,
-                //              real_dma_store_pos_q);
-                // end
+                if (real_dma_store_active) begin
+                    $display("[%0t] REAL_DMA_STORE_DONE sram=0x%04x len=%0d pos=%0d",
+                             $time,
+                             real_dma_store_sram_addr_q,
+                             real_dma_store_len_q,
+                             real_dma_store_pos_q);
+                end
                 real_dma_store_active <= 1'b0;
             end
         end
     end
-end
-
-
 
     wire rst_int_n;
     assign rst_int_n = rst_n & ~soft_reset;
@@ -838,6 +829,12 @@ assign npu_error = 1'b0;
     logic [UCODE_AW-1:0]   ucode_axil_waddr;
     logic [127:0]          ucode_axil_wdata;
 
+    logic [31:0]             perf_total_cycles,
+    logic [31:0]             perf_gemm_cycles,
+    logic [31:0]             perf_dma_cycles,
+    logic [31:0]             perf_ew_cycles,
+    logic [31:0]             perf_stall_cycles,
+
     // =========================================================================
     // AXI4-Lite Register Bank
     // =========================================================================
@@ -900,7 +897,14 @@ assign npu_error = 1'b0;
 
         .tdesc_we_o        (tdesc_we),
         .tdesc_waddr_o     (tdesc_waddr),
-        .tdesc_wdata_o     (tdesc_wdata)
+        .tdesc_wdata_o     (tdesc_wdata),
+        
+        .perf_total_cycles  (perf_total_cycles)
+        .perf_gemm_cycles   (perf_gemm_cycles),
+        .perf_dma_cycles    (perf_dma_cycles),
+        .perf_ew_cycles     (perf_ew_cycles),
+        .perf_stall_cycles  (perf_stall_cycles)
+
     );
 
     // =========================================================================
@@ -1376,18 +1380,11 @@ end
 //   axi_dma_rd.data_out -> u_graph_core.SRAM0 through graph_sram_dma_wr_*
 //   u_graph_core.SRAM0 -> axi_dma_wr.data_in through graph_sram_dma_rd_*
 // -------------------------------------------------------------------------
+assign dma_smoke_push = (!graph_mode) && dma_rd_data_valid && dma_rd_data_ready;
+assign dma_smoke_pop  = (!graph_mode) && dma_wr_data_valid && dma_wr_data_ready;
 
-assign dma_wr_data_valid = graph_mode ? (real_dma_store_active &&
-                                         (real_store_state_q == REAL_STORE_SEND))
-                                      : (dma_smoke_count != 0);
-
-assign dma_wr_data_in    = graph_mode ? {{(P_AXI_DATA_W-64){1'b0}}, real_store_data_q}
-                                      : dma_smoke_buf[dma_smoke_rd_ptr];
-
-assign dma_wr_data_last  = graph_mode ? (real_dma_store_active &&
-                                         (real_store_state_q == REAL_STORE_SEND) &&
-                                         (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q))
-                                      : 1'b0;
+assign dma_rd_data_ready = graph_mode ? real_dma_load_active
+                                      : (dma_smoke_count < DMA_SMOKE_BUF_DEPTH);
 
 always_ff @(posedge clk or negedge rst_int_n) begin
     if (!rst_int_n) begin
@@ -1415,22 +1412,14 @@ end
 ////
 //// GRAPH
 ////
-logic graph_sram_dma_rd_valid_q;
 
-always_ff @(posedge clk or negedge rst_int_n) begin
-  if (!rst_int_n) begin
-    graph_sram_dma_rd_valid_q <= 1'b0;
-  end else begin
-    graph_sram_dma_rd_valid_q <= graph_sram_dma_rd_en;
-  end
-end
-
-assign dma_wr_data_valid = graph_mode ? graph_sram_dma_rd_valid_q
+assign dma_wr_data_valid = graph_mode ? (real_dma_store_active &&
+                                         (real_store_state_q == REAL_STORE_SEND))
                                       : (dma_smoke_count != 0);
-
-assign dma_wr_data_in    = graph_mode ? {{(P_AXI_DATA_W-64){1'b0}}, graph_sram_dma_rd_data}
+assign dma_wr_data_in    = graph_mode ? {{(P_AXI_DATA_W-64){1'b0}}, real_store_data_q}
                                       : dma_smoke_buf[dma_smoke_rd_ptr];
 assign dma_wr_data_last  = graph_mode ? (real_dma_store_active &&
+                                         (real_store_state_q == REAL_STORE_SEND) &&
                                          (real_dma_store_pos_q + 16'd8 >= real_dma_store_len_q))
                                       : 1'b0;
 
@@ -1466,35 +1455,35 @@ end
 // -------------------------------------------------------------------------
 // Important: do NOT print every AXI R/W beat here. Block1 has tens of thousands
 // of DMA beats, and per-beat printing hides the useful early log. Keep only
-// // graph-level DMA commands and non-OKAY AXI responses.
-// always @(posedge clk) begin
-//     if (rst_int_n && graph_dma_rd_accept) begin
-//         $display("[%0t] NPU_GRAPH_DMA_RD_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
-//                  $time,
-//                  graph_dma_ddr_addr,
-//                  reg_ddr_base_act,
-//                  graph_dma_abs_addr,
-//                  graph_dma_length);
-//     end
+// graph-level DMA commands and non-OKAY AXI responses.
+always @(posedge clk) begin
+    if (rst_int_n && graph_dma_rd_accept) begin
+        $display("[%0t] NPU_GRAPH_DMA_RD_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
+                 $time,
+                 graph_dma_ddr_addr,
+                 reg_ddr_base_act,
+                 graph_dma_abs_addr,
+                 graph_dma_length);
+    end
 
-//     if (rst_int_n && graph_dma_wr_accept) begin
-//         $display("[%0t] NPU_GRAPH_DMA_WR_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
-//                  $time,
-//                  graph_dma_ddr_addr,
-//                  reg_ddr_base_act,
-//                  graph_dma_abs_addr,
-//                  graph_dma_length);
-//     end
+    if (rst_int_n && graph_dma_wr_accept) begin
+        $display("[%0t] NPU_GRAPH_DMA_WR_ACCEPT graph_off=0x%08x base=0x%08x abs=0x%08x len=%0d",
+                 $time,
+                 graph_dma_ddr_addr,
+                 reg_ddr_base_act,
+                 graph_dma_abs_addr,
+                 graph_dma_length);
+    end
 
-//     if (rst_int_n && m_axi_rvalid && m_axi_rready && (m_axi_rresp != 2'b00)) begin
-//         $display("[%0t] NPU_AXI_R_ERROR data=0x%032x resp=0x%0x last=%0d",
-//                  $time, m_axi_rdata, m_axi_rresp, m_axi_rlast);
-//     end
+    if (rst_int_n && m_axi_rvalid && m_axi_rready && (m_axi_rresp != 2'b00)) begin
+        $display("[%0t] NPU_AXI_R_ERROR data=0x%032x resp=0x%0x last=%0d",
+                 $time, m_axi_rdata, m_axi_rresp, m_axi_rlast);
+    end
 
-//     if (rst_int_n && m_axi_bvalid && m_axi_bready && (m_axi_bresp != 2'b00)) begin
-//         $display("[%0t] NPU_AXI_B_ERROR resp=0x%0x", $time, m_axi_bresp);
-//     end
-// end
+    if (rst_int_n && m_axi_bvalid && m_axi_bready && (m_axi_bresp != 2'b00)) begin
+        $display("[%0t] NPU_AXI_B_ERROR resp=0x%0x", $time, m_axi_bresp);
+    end
+end
 // `endif
 
 // =========================================================================
@@ -1554,11 +1543,14 @@ graph_compute_core_stage0 #(
     .graph_busy     (graph_busy),
     .graph_status   (graph_status),
     .graph_pc       (graph_pc),
-    .graph_last_op  (graph_last_op)
+    .graph_last_op  (graph_last_op),
+
+    .perf_total_cycles  (perf_total_cycles),
+    .perf_gemm_cycles   (perf_gemm_cycles),
+    .perf_dma_cycles    (perf_dma_cycles),
+    .perf_ew_cycles     (perf_ew_cycles),
+    .perf_stall_cycles  (perf_stall_cycles)
 );
 
 
-
 endmodule
-
-`default_nettype wire
