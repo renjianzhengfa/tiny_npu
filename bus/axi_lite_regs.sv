@@ -114,12 +114,14 @@ always_comb begin
         i_perf_ew_cycles    <=  0;
         i_perf_stall_cycles <=  0;
     end
-    else
+    else    begin
         i_perf_total_cycles <=  perf_total_cycles;
         i_perf_gemm_cycles  <=  perf_gemm_cycles ;
         i_perf_dma_cycles   <=  perf_dma_cycles  ;
         i_perf_ew_cycles    <=  perf_ew_cycles   ;
         i_perf_stall_cycles <=  perf_stall_cycles;
+    end
+end
 
     // =======================================================================
     //  Internal register storage
