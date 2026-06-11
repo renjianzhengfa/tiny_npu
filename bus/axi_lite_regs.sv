@@ -242,14 +242,40 @@ logic [UCODE_AW-1:0] ucode_stage_idx;
 logic [3:0]          ucode_stage_valid;
 
 
-logic [31:0] GRAPH_PROG_COMMIT_COUNT  = 32'h50;
-logic [31:0] GRAPH_PROG_LAST_WADDR    = 32'h54;
-logic [31:0] GRAPH_PROG_LAST_LOW32    = 32'h58;
-logic [31:0] GRAPH_PROG_LAST_HIGH32   = 32'h5c;
-logic [31:0] TDESC_COMMIT_COUNT       = 32'h60;
-logic [31:0] TDESC_LAST_WADDR         = 32'h64;  
-logic [31:0] TDESC_LAST_LOW32         = 32'h68;
-logic [31:0] TDESC_LAST_HIGH32        = 32'h6c;    
+// Debug read-only register offsets for write-window commits.
+// These are addresses, not counters.
+localparam logic [7:0] REG_GRAPH_PROG_COMMIT_COUNT = 8'h50;
+localparam logic [7:0] REG_GRAPH_PROG_LAST_WADDR   = 8'h54;
+localparam logic [7:0] REG_GRAPH_PROG_LAST_LOW32   = 8'h58;
+localparam logic [7:0] REG_GRAPH_PROG_LAST_HIGH32  = 8'h5C;
+
+localparam logic [7:0] REG_TDESC_COMMIT_COUNT      = 8'h60;
+localparam logic [7:0] REG_TDESC_LAST_WADDR        = 8'h64;
+localparam logic [7:0] REG_TDESC_LAST_LOW32        = 8'h68;
+localparam logic [7:0] REG_TDESC_LAST_HIGH32       = 8'h6C;
+
+localparam logic [7:0] REG_PERF_TOTAL_CYCLES       = 8'h70;
+localparam logic [7:0] REG_PERF_GEMM_CYCLES        = 8'h74;
+localparam logic [7:0] REG_PERF_DMA_CYCLES         = 8'h78;
+localparam logic [7:0] REG_PERF_EW_CYCLES          = 8'h7C;
+localparam logic [7:0] REG_PERF_STALL_CYCLES       = 8'h80;
+
+// Actual debug state registers.
+logic [31:0] dbg_graph_prog_commit_count;
+logic [31:0] dbg_graph_prog_last_waddr;
+logic [31:0] dbg_graph_prog_last_low32;
+logic [31:0] dbg_graph_prog_last_high32;
+
+logic [31:0] dbg_tdesc_commit_count;
+logic [31:0] dbg_tdesc_last_waddr;
+logic [31:0] dbg_tdesc_last_low32;
+logic [31:0] dbg_tdesc_last_high32;
+
+// Optional AXI-Lite-side shadow memories for readback of write windows.
+// These mirror what is committed through graph_prog_we_o/tdesc_we_o.
+// They are intended for board bring-up/readback verification.
+logic [127:0] graph_prog_shadow [0:(1 << GRAPH_PROG_AW)-1];
+logic [255:0] tdesc_shadow      [0:(1 << TDESC_AW)-1];
 
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -399,6 +425,32 @@ logic [31:0] TDESC_LAST_HIGH32        = 32'h6c;
     logic        rd_pending;
     logic [31:0] rd_addr_r;
 
+    wire is_graph_prog_win_rd_addr =
+        (rd_addr_r[15:0] >= GRAPH_PROG_WIN_BASE) &&
+        (rd_addr_r[15:0] <  GRAPH_PROG_WIN_END);
+
+    wire [15:0] rd_graph_prog_win_off =
+        rd_addr_r[15:0] - GRAPH_PROG_WIN_BASE;
+
+    wire [GRAPH_PROG_AW-1:0] rd_graph_prog_win_idx =
+        rd_graph_prog_win_off[GRAPH_PROG_AW+3:4];
+
+    wire [1:0] rd_graph_prog_word_sel =
+        rd_graph_prog_win_off[3:2];
+
+    wire is_tdesc_win_rd_addr =
+        (rd_addr_r[15:0] >= TDESC_WIN_BASE) &&
+        (rd_addr_r[15:0] <  TDESC_WIN_END);
+
+    wire [15:0] rd_tdesc_win_off =
+        rd_addr_r[15:0] - TDESC_WIN_BASE;
+
+    wire [TDESC_AW-1:0] rd_tdesc_win_idx =
+        rd_tdesc_win_off[TDESC_AW+4:5];
+
+    wire [2:0] rd_tdesc_word_sel =
+        rd_tdesc_win_off[4:2];
+
     assign s_axil_arready = !rd_pending && !s_axil_rvalid;
     assign s_axil_rresp   = AXI_RESP_OKAY;
 
@@ -424,7 +476,28 @@ logic [31:0] TDESC_LAST_HIGH32        = 32'h6c;
                 s_axil_rvalid <= 1'b1;
                 rd_pending    <= 1'b0;
 
-                case (rd_addr_r[7:0])
+                if (is_graph_prog_win_rd_addr) begin
+                    unique case (rd_graph_prog_word_sel)
+                        2'd0: s_axil_rdata <= graph_prog_shadow[rd_graph_prog_win_idx][31:0];
+                        2'd1: s_axil_rdata <= graph_prog_shadow[rd_graph_prog_win_idx][63:32];
+                        2'd2: s_axil_rdata <= graph_prog_shadow[rd_graph_prog_win_idx][95:64];
+                        2'd3: s_axil_rdata <= graph_prog_shadow[rd_graph_prog_win_idx][127:96];
+                        default: s_axil_rdata <= 32'hDEAD_BEEF;
+                    endcase
+                end else if (is_tdesc_win_rd_addr) begin
+                    unique case (rd_tdesc_word_sel)
+                        3'd0: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][31:0];
+                        3'd1: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][63:32];
+                        3'd2: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][95:64];
+                        3'd3: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][127:96];
+                        3'd4: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][159:128];
+                        3'd5: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][191:160];
+                        3'd6: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][223:192];
+                        3'd7: s_axil_rdata <= tdesc_shadow[rd_tdesc_win_idx][255:224];
+                        default: s_axil_rdata <= 32'hDEAD_BEEF;
+                    endcase
+                end else begin
+                    case (rd_addr_r[7:0])
                     REG_CTRL[7:0]:           s_axil_rdata <= reg_ctrl;
                     REG_STATUS[7:0]:         s_axil_rdata <= status_reg;
                     REG_UCODE_BASE[7:0]:     s_axil_rdata <= reg_ucode_base;
@@ -443,23 +516,24 @@ logic [31:0] TDESC_LAST_HIGH32        = 32'h6c;
                     REG_GRAPH_STATUS[7:0]:   s_axil_rdata <= graph_status_i;
                     REG_GRAPH_PC[7:0]:       s_axil_rdata <= graph_pc_i;
                     REG_GRAPH_LAST_OP[7:0]:  s_axil_rdata <= graph_last_op_i;
-                    8'h50:                      s_axil_rdata <= GRAPH_PROG_COMMIT_COUNT;
-                    8'h54:                      s_axil_rdata <= GRAPH_PROG_LAST_WADDR  ;
-                    8'h58:                      s_axil_rdata <= GRAPH_PROG_LAST_LOW32  ;
-                    8'h5C:                      s_axil_rdata <= GRAPH_PROG_LAST_HIGH32 ;
+                    REG_GRAPH_PROG_COMMIT_COUNT: s_axil_rdata <= dbg_graph_prog_commit_count;
+                    REG_GRAPH_PROG_LAST_WADDR:   s_axil_rdata <= dbg_graph_prog_last_waddr;
+                    REG_GRAPH_PROG_LAST_LOW32:   s_axil_rdata <= dbg_graph_prog_last_low32;
+                    REG_GRAPH_PROG_LAST_HIGH32:  s_axil_rdata <= dbg_graph_prog_last_high32;
 
-                    8'h60:                      s_axil_rdata <= TDESC_COMMIT_COUNT;
-                    8'h64:                      s_axil_rdata <= TDESC_LAST_WADDR  ;
-                    8'h68:                      s_axil_rdata <= TDESC_LAST_LOW32  ;
-                    8'h6C:                      s_axil_rdata <= TDESC_LAST_HIGH32 ;
+                    REG_TDESC_COMMIT_COUNT:      s_axil_rdata <= dbg_tdesc_commit_count;
+                    REG_TDESC_LAST_WADDR:        s_axil_rdata <= dbg_tdesc_last_waddr;
+                    REG_TDESC_LAST_LOW32:        s_axil_rdata <= dbg_tdesc_last_low32;
+                    REG_TDESC_LAST_HIGH32:       s_axil_rdata <= dbg_tdesc_last_high32;
 
-                    8'h70:                      s_axil_rdata <= i_perf_total_cycles;
-                    8'h74:                      s_axil_rdata <= i_perf_gemm_cycles ;
-                    8'h78:                      s_axil_rdata <= i_perf_dma_cycles  ;
-                    8'h7C:                      s_axil_rdata <= i_perf_ew_cycles   ;
-                    8'h80:                      s_axil_rdata <= i_perf_stall_cycles;
+                    REG_PERF_TOTAL_CYCLES:       s_axil_rdata <= i_perf_total_cycles;
+                    REG_PERF_GEMM_CYCLES:        s_axil_rdata <= i_perf_gemm_cycles;
+                    REG_PERF_DMA_CYCLES:         s_axil_rdata <= i_perf_dma_cycles;
+                    REG_PERF_EW_CYCLES:          s_axil_rdata <= i_perf_ew_cycles;
+                    REG_PERF_STALL_CYCLES:       s_axil_rdata <= i_perf_stall_cycles;
                     default:                 s_axil_rdata <= 32'hDEAD_BEEF;
-                endcase
+                    endcase
+                end
             end
 
             // De-assert RVALID when master accepts the data
@@ -544,6 +618,11 @@ always_ff @(posedge clk or negedge rst_n) begin
     graph_prog_we_o        <= 1'b0;
     graph_prog_waddr_o     <= '0;
     graph_prog_wdata_o     <= 128'd0;
+
+    dbg_graph_prog_commit_count <= 32'd0;
+    dbg_graph_prog_last_waddr   <= 32'd0;
+    dbg_graph_prog_last_low32   <= 32'd0;
+    dbg_graph_prog_last_high32  <= 32'd0;
   end else begin
     graph_prog_we_o <= 1'b0;
 
@@ -573,6 +652,17 @@ always_ff @(posedge clk or negedge rst_n) begin
           graph_prog_stage[63:32],
           graph_prog_stage[31:0]
         };
+
+        dbg_graph_prog_commit_count <= dbg_graph_prog_commit_count + 32'd1;
+        dbg_graph_prog_last_waddr   <= {{(32-GRAPH_PROG_AW){1'b0}}, graph_prog_win_idx};
+        dbg_graph_prog_last_low32   <= graph_prog_stage[31:0];
+        dbg_graph_prog_last_high32  <= wr_data;
+        graph_prog_shadow[graph_prog_win_idx] <= {
+          wr_data,
+          graph_prog_stage[95:64],
+          graph_prog_stage[63:32],
+          graph_prog_stage[31:0]
+        };
       end
     end
   end
@@ -591,6 +681,11 @@ always_ff @(posedge clk or negedge rst_n) begin
     tdesc_we_o        <= 1'b0;
     tdesc_waddr_o     <= '0;
     tdesc_wdata_o     <= 256'd0;
+
+    dbg_tdesc_commit_count <= 32'd0;
+    dbg_tdesc_last_waddr   <= 32'd0;
+    dbg_tdesc_last_low32   <= 32'd0;
+    dbg_tdesc_last_high32  <= 32'd0;
   end else begin
     tdesc_we_o <= 1'b0;
 
@@ -628,51 +723,24 @@ always_ff @(posedge clk or negedge rst_n) begin
           tdesc_stage[63:32],
           tdesc_stage[31:0]
         };
+
+        dbg_tdesc_commit_count <= dbg_tdesc_commit_count + 32'd1;
+        dbg_tdesc_last_waddr   <= {{(32-TDESC_AW){1'b0}}, tdesc_win_idx};
+        dbg_tdesc_last_low32   <= tdesc_stage[31:0];
+        dbg_tdesc_last_high32  <= wr_data;
+        tdesc_shadow[tdesc_win_idx] <= {
+          wr_data,
+          tdesc_stage[223:192],
+          tdesc_stage[191:160],
+          tdesc_stage[159:128],
+          tdesc_stage[127:96],
+          tdesc_stage[95:64],
+          tdesc_stage[63:32],
+          tdesc_stage[31:0]
+        };
       end
     end
   end
 end
 
-
-always_comb begin
-    if(~rst_n) begin 
-        GRAPH_PROG_COMMIT_COUNT = 0;
-        GRAPH_PROG_LAST_WADDR   = 0;
-        GRAPH_PROG_LAST_LOW32   = 0;
-        GRAPH_PROG_LAST_HIGH32 = 0;
-    end else if(graph_prog_we_o == 1'b1)begin
-        GRAPH_PROG_COMMIT_COUNT <= GRAPH_PROG_COMMIT_COUNT + 1;
-        GRAPH_PROG_LAST_WADDR   <= graph_prog_win_idx;
-        GRAPH_PROG_LAST_LOW32   <=  graph_prog_wdata_o[31:0];
-        GRAPH_PROG_LAST_HIGH32  <=  graph_prog_wdata_o[127:96];
-    end else begin 
-        GRAPH_PROG_COMMIT_COUNT <= GRAPH_PROG_COMMIT_COUNT;
-        GRAPH_PROG_LAST_WADDR   <= GRAPH_PROG_LAST_WADDR  ;
-        GRAPH_PROG_LAST_LOW32   <= GRAPH_PROG_LAST_LOW32  ;
-        GRAPH_PROG_LAST_HIGH32  <= GRAPH_PROG_LAST_HIGH32 ;
-    end
-end
-
-always_comb begin
-    if(~rst_n) begin 
-        TDESC_COMMIT_COUNT = 0;
-        TDESC_LAST_WADDR   = 0;
-        TDESC_LAST_LOW32   = 0;
-        TDESC_LAST_HIGH32 = 0;
-    end else if(tdesc_we_o == 1'b1)begin
-        TDESC_COMMIT_COUNT <= TDESC_COMMIT_COUNT + 1;
-        TDESC_LAST_WADDR   <= tdesc_win_idx;
-        TDESC_LAST_LOW32   <= tdesc_wdata_o[31:0];
-        TDESC_LAST_HIGH32  <= tdesc_wdata_o[255:224];
-    end else begin 
-        TDESC_COMMIT_COUNT <= TDESC_COMMIT_COUNT;
-        TDESC_LAST_WADDR   <= TDESC_LAST_WADDR  ;
-        TDESC_LAST_LOW32   <= TDESC_LAST_LOW32  ;
-        TDESC_LAST_HIGH32  <= TDESC_LAST_HIGH32 ;
-    end
-end
-
-
-
 endmodule : axi_lite_regs
-
