@@ -9,6 +9,16 @@
 // =============================================================================
 `default_nettype none
 
+// -----------------------------------------------------------------------------
+// Simulation debug switches
+// -----------------------------------------------------------------------------
+// Functional path is based on the 16-bit tile-counter version.
+// Debug prints are disabled by default. Enable in VCS with:
+//   +define+SIM_GEMM_DEBUG
+// Optional extra first-row output quantization/write trace:
+//   +define+SIM_GEMM_QDBG
+// -----------------------------------------------------------------------------
+
 module gemm_ctrl
     import npu_pkg::*;
     import isa_pkg::*;
@@ -103,11 +113,18 @@ module gemm_ctrl
     // =========================================================================
     // Tile counters
     // =========================================================================
-    logic [3:0] m_tile_r, n_tile_r, k_tile_r;     // current tile indices
-    logic [3:0] m_tiles_r, n_tiles_r, k_tiles_r;  // total tiles per dimension
+    logic [15:0] m_tile_r, n_tile_r, k_tile_r;     // current tile indices
+    logic [15:0] m_tiles_r, n_tiles_r, k_tiles_r;  // total tiles per dimension
 
     // Tile base addresses (precomputed in ST_TILE_SETUP)
     logic [15:0] a_tile_base, b_tile_base, c_tile_base;
+
+    // 16-byte tile offsets. Keep these 16-bit so block0 M=832 -> 52 M-tiles
+    // is not truncated. The old 4-bit counter path caused 52 (0x34) -> 4.
+    logic [15:0] m_tile_off16, n_tile_off16, k_tile_off16;
+    assign m_tile_off16 = (m_tile_r << 4);
+    assign n_tile_off16 = (n_tile_r << 4);
+    assign k_tile_off16 = (k_tile_r << 4);
 
     // Store phase for 2-phase ACC read-modify-write
     logic store_phase;
@@ -150,9 +167,9 @@ module gemm_ctrl
     // =========================================================================
     // Helper: does this GEMM need multi-K-tile accumulation?
     // =========================================================================
-    wire multi_k = (k_tiles_r > 4'd1);
-    wire last_k_tile = (k_tile_r == k_tiles_r - 4'd1);
-    wire first_k_tile = (k_tile_r == 4'd0);
+    wire multi_k = (k_tiles_r > 16'd1);
+    wire last_k_tile = (k_tile_r == k_tiles_r - 16'd1);
+    wire first_k_tile = (k_tile_r == 16'd0);
 
     // =========================================================================
     // Next-state logic
@@ -244,11 +261,11 @@ module gemm_ctrl
 
             ST_TILE_NEXT: begin
                 // Advance tile counters: inner=k, middle=n, outer=m
-                if (k_tile_r < k_tiles_r - 4'd1)
+                if (k_tile_r < k_tiles_r - 16'd1)
                     state_next = ST_TILE_SETUP;
-                else if (n_tile_r < n_tiles_r - 4'd1)
+                else if (n_tile_r < n_tiles_r - 16'd1)
                     state_next = ST_TILE_SETUP;
-                else if (m_tile_r < m_tiles_r - 4'd1)
+                else if (m_tile_r < m_tiles_r - 16'd1)
                     state_next = ST_TILE_SETUP;
                 else
                     state_next = ST_DONE;
@@ -424,9 +441,9 @@ module gemm_ctrl
                                 //     else if (!dbg_printed_first_gemm &&
                                 //         state == ST_STORE &&
                                 //         last_k_tile && !r_dtype && store_phase &&
-                                //         (m_tile_r == 4'd0) &&
-                                //         (n_tile_r == 4'd0) &&
-                                //         (k_tile_r == k_tiles_r - 4'd1) &&
+                                //         (m_tile_r == 16'd0) &&
+                                //         (n_tile_r == 16'd0) &&
+                                //         (k_tile_r == k_tiles_r - 16'd1) &&
                                 //         (store_row == 5'd0) &&
                                 //         (store_col < 5'd16)) begin
                                 //         $display("[%0t] GEMM_QDBG m_tile=%0d n_tile=%0d k_tile=%0d row=%0d col=%0d acc_old=%0d sa_acc=%0d acc_sum=%0d requant=%0d scale=%0d shift=%0d transpose_b=%0d out=0x%02x",
@@ -539,9 +556,9 @@ module gemm_ctrl
 
                 ST_SETUP: begin
                     // Compute tile counts
-                    m_tiles_r <= 4'((r_M + 16'd15) >> 4);
-                    n_tiles_r <= 4'((r_N + 16'd15) >> 4);
-                    k_tiles_r <= 4'((r_K + 16'd15) >> 4);
+                    m_tiles_r <= (r_M + 16'd15) >> 4;
+                    n_tiles_r <= (r_N + 16'd15) >> 4;
+                    k_tiles_r <= (r_K + 16'd15) >> 4;
                     // Reset tile counters
                     m_tile_r  <= '0;
                     n_tile_r  <= '0;
@@ -551,9 +568,9 @@ module gemm_ctrl
                 ST_TILE_SETUP: begin
                     // Compute per-tile effective dimensions
                     begin
-                        automatic logic [15:0] m_remain = r_M - {12'b0, m_tile_r} * 16'd16;
-                        automatic logic [15:0] n_remain = r_N - {12'b0, n_tile_r} * 16'd16;
-                        automatic logic [15:0] k_remain = r_K - {12'b0, k_tile_r} * 16'd16;
+                        automatic logic [15:0] m_remain = r_M - m_tile_off16;
+                        automatic logic [15:0] n_remain = r_N - n_tile_off16;
+                        automatic logic [15:0] k_remain = r_K - k_tile_off16;
                         m_eff <= (m_remain < 16) ? m_remain[4:0] : 5'd16;
                         n_eff <= (n_remain < 16) ? n_remain[4:0] : 5'd16;
                         k_eff <= (k_remain < 16) ? k_remain[4:0] : 5'd16;
@@ -562,28 +579,32 @@ module gemm_ctrl
                     // Compute tile base addresses
                     if (r_dtype) begin
                         // FP16: 2 bytes per element
-                        a_tile_base <= r_src0 + ({8'b0, m_tile_r, 4'b0} * (r_K <<< 1)) + ({8'b0, k_tile_r, 4'b0} <<< 1);
+                        // A is [M][K], so the M tile selects rows of A.
+                        a_tile_base <= r_src0 + (m_tile_off16 * (r_K << 1)) + (k_tile_off16 << 1);
 
                         if (r_transpose_b)
-                            b_tile_base <= r_src1 + ({8'b0, n_tile_r, 4'b0} * (r_K <<< 1)) + ({8'b0, k_tile_r, 4'b0} <<< 1);
+                            // B stored as [N][K]
+                            b_tile_base <= r_src1 + (n_tile_off16 * (r_K << 1)) + (k_tile_off16 << 1);
                         else
-                            b_tile_base <= r_src1 + ({8'b0, k_tile_r, 4'b0} * (r_N <<< 1)) + ({8'b0, n_tile_r, 4'b0} <<< 1);
+                            // B stored as [K][N]
+                            b_tile_base <= r_src1 + (k_tile_off16 * (r_N << 1)) + (n_tile_off16 << 1);
 
-                        c_tile_base <= r_dst + ({8'b0, m_tile_r, 4'b0} * (r_N <<< 1)) + ({8'b0, n_tile_r, 4'b0} <<< 1);
+                        // C is [M][N]
+                        c_tile_base <= r_dst + (m_tile_off16 * (r_N << 1)) + (n_tile_off16 << 1);
                     end else begin
                         // INT8: 1 byte per element
-                        // a_tile_base = src0 + m_tile*16*K + k_tile*16
-                        a_tile_base <= r_src0 + {8'b0, m_tile_r, 4'b0} * r_K + {8'b0, k_tile_r, 4'b0};
+                        // A is [M][K]: a_tile_base = src0 + m_tile*16*K + k_tile*16
+                        a_tile_base <= r_src0 + (m_tile_off16 * r_K) + k_tile_off16;
 
                         if (r_transpose_b)
                             // B stored as [N][K]: b_tile_base = src1 + n_tile*16*K + k_tile*16
-                            b_tile_base <= r_src1 + {8'b0, n_tile_r, 4'b0} * r_K + {8'b0, k_tile_r, 4'b0};
+                            b_tile_base <= r_src1 + (n_tile_off16 * r_K) + k_tile_off16;
                         else
                             // B stored as [K][N]: b_tile_base = src1 + k_tile*16*N + n_tile*16
-                            b_tile_base <= r_src1 + {8'b0, k_tile_r, 4'b0} * r_N + {8'b0, n_tile_r, 4'b0};
+                            b_tile_base <= r_src1 + (k_tile_off16 * r_N) + n_tile_off16;
 
-                        // c_tile_base = dst + m_tile*16*N + n_tile*16
-                        c_tile_base <= r_dst + {8'b0, m_tile_r, 4'b0} * r_N + {8'b0, n_tile_r, 4'b0};
+                        // C is [M][N]: c_tile_base = dst + m_tile*16*N + n_tile*16
+                        c_tile_base <= r_dst + (m_tile_off16 * r_N) + n_tile_off16;
                     end
 
                     // Reset load/store counters
@@ -770,16 +791,16 @@ module gemm_ctrl
 
                 ST_TILE_NEXT: begin
                     // Advance tile counters: inner=k, middle=n, outer=m
-                    if (k_tile_r < k_tiles_r - 4'd1) begin
-                        k_tile_r <= k_tile_r + 4'd1;
+                    if (k_tile_r < k_tiles_r - 16'd1) begin
+                        k_tile_r <= k_tile_r + 16'd1;
                     end else begin
                         k_tile_r <= '0;
-                        if (n_tile_r < n_tiles_r - 4'd1) begin
-                            n_tile_r <= n_tile_r + 4'd1;
+                        if (n_tile_r < n_tiles_r - 16'd1) begin
+                            n_tile_r <= n_tile_r + 16'd1;
                         end else begin
                             n_tile_r <= '0;
-                            if (m_tile_r < m_tiles_r - 4'd1) begin
-                                m_tile_r <= m_tile_r + 4'd1;
+                            if (m_tile_r < m_tiles_r - 16'd1) begin
+                                m_tile_r <= m_tile_r + 16'd1;
                             end
                         end
                     end
@@ -789,6 +810,77 @@ module gemm_ctrl
             endcase
         end
     end
+
+
+`ifdef SIM_GEMM_DEBUG
+    // =========================================================================
+    // Simulation-only debug prints
+    // =========================================================================
+    // Enable with +define+SIM_GEMM_DEBUG.
+    // Extra output quant/write trace can be enabled with +define+SIM_GEMM_QDBG.
+    always_ff @(posedge clk) begin
+        if (rst_n) begin
+            if (state == ST_IDLE && cmd_valid) begin
+                $display("[%0t] GEMM_CMD src0=0x%04x src1=0x%04x dst=0x%04x M=%0d N=%0d K=%0d flags=0x%02x imm=0x%04x dtype=%0d transpose_b=%0d requant=%0d scale=%0d shift=%0d",
+                         $time, cmd_src0, cmd_src1, cmd_dst, cmd_M, cmd_N, cmd_K,
+                         cmd_flags, cmd_imm, cmd_dtype, cmd_flags[FLAG_TRANSPOSE_B],
+                         cmd_flags[FLAG_REQUANT], cmd_imm[7:0], cmd_imm[15:8]);
+            end
+
+            if (state == ST_SETUP) begin
+                $display("[%0t] GEMM_TILE_COUNT M=%0d N=%0d K=%0d -> m_tiles=%0d n_tiles=%0d k_tiles=%0d",
+                         $time, r_M, r_N, r_K,
+                         ((r_M + 16'd15) >> 4),
+                         ((r_N + 16'd15) >> 4),
+                         ((r_K + 16'd15) >> 4));
+            end
+
+            if (state == ST_TILE_SETUP) begin
+                if ((m_tile_r < 16'd4 && n_tile_r == 16'd0) ||
+                    (m_tile_r == (m_tiles_r - 16'd1) &&
+                     n_tile_r == (n_tiles_r - 16'd1) &&
+                     k_tile_r == (k_tiles_r - 16'd1))) begin
+                    $display("[%0t] GEMM_TILE_SETUP m_tile=%0d/%0d n_tile=%0d/%0d k_tile=%0d/%0d m_off=0x%04x n_off=0x%04x k_off=0x%04x dst=0x%04x",
+                             $time,
+                             m_tile_r, m_tiles_r,
+                             n_tile_r, n_tiles_r,
+                             k_tile_r, k_tiles_r,
+                             m_tile_off16, n_tile_off16, k_tile_off16, r_dst);
+                end
+            end
+
+`ifdef SIM_GEMM_QDBG
+            if (state == ST_STORE && !r_dtype && last_k_tile && sram_wr_en &&
+                n_tile_r == 16'd0 &&
+                ((m_tile_r < 16'd4) || (m_tile_r == (m_tiles_r - 16'd1))) &&
+                store_row == 5'd0 && store_col < 5'd16) begin
+                if (multi_k) begin
+                    $display("[%0t] GEMM_QDBG m_tile=%0d n_tile=%0d k_tile=%0d row=%0d col=%0d c_addr=0x%04x acc_old=%0d sa_acc=%0d acc_sum=%0d out=0x%02x scale=%0d shift=%0d",
+                             $time, m_tile_r, n_tile_r, k_tile_r,
+                             store_row, store_col, sram_wr_addr,
+                             acc_rd_data,
+                             sa_acc[store_row[3:0]][store_col[3:0]],
+                             acc_rd_data + sa_acc[store_row[3:0]][store_col[3:0]],
+                             sram_wr_data, r_scale, r_shift);
+                end else begin
+                    $display("[%0t] GEMM_QDBG m_tile=%0d n_tile=%0d k_tile=%0d row=%0d col=%0d c_addr=0x%04x sa_acc=%0d out=0x%02x scale=%0d shift=%0d",
+                             $time, m_tile_r, n_tile_r, k_tile_r,
+                             store_row, store_col, sram_wr_addr,
+                             sa_acc[store_row[3:0]][store_col[3:0]],
+                             sram_wr_data, r_scale, r_shift);
+                end
+            end
+`endif
+
+            if (state == ST_DONE) begin
+                $display("[%0t] GEMM_DONE dst=0x%04x M=%0d N=%0d K=%0d final_tiles m=%0d/%0d n=%0d/%0d k=%0d/%0d",
+                         $time, r_dst, r_M, r_N, r_K,
+                         m_tile_r, m_tiles_r, n_tile_r, n_tiles_r, k_tile_r, k_tiles_r);
+            end
+        end
+    end
+`endif
+
 
 endmodule
 
