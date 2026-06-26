@@ -230,7 +230,7 @@ program.bin / tdesc.bin / ddr_image.bin 写入
 * Vivado 综合与 FPGA 上板约束收敛；
 * README 中补充运行脚本、波形截图和验证日志。
 
-## 7. 面向简历的项目总结
+## 7. 项目总结
 
 本项目可概括为：
 
